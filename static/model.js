@@ -17,6 +17,17 @@ const BRW = [6, 6, 8, 8, 10, 12, 16, 21, 26, 32.5, 35, 37.5, 40, 42.5, 45, 47.5,
 const ROLE_ORDER = { TOP: 0, JUNGLE: 1, MIDDLE: 2, BOTTOM: 3, UTILITY: 4 };
 const ROLE_SHORT = { TOP: 'Top', JUNGLE: 'Jungle', MIDDLE: 'Mid', BOTTOM: 'Bot', UTILITY: 'Support' };
 const SAMPLE_STEP = 2; // seconds
+// game rules, in seconds unless noted
+const INHIB_RESPAWN = 300, NEXUS_TURRET_RESPAWN = 180;
+const BARON_BUFF = 180, ELDER_BUFF = 150, HERALD_EFFECT = 240;
+const GRUB_GROUP_WINDOW = 40;           // Voidgrubs killed this close together count as one take
+const FIGHT_GAP = 15, FIGHT_RADIUS = 3500; // kills join the same fight within this time and distance (map units)
+const WALK_SPEED = 370;                 // map units per second, for estimating when a recall happened
+const KILL_BOUNTY_DEFAULT = 300;        // League-client timelines don't record bounties
+const ASSIST_GOLD_FACTOR = 1.5;         // a kill with assists pays out about this much in total
+const PHASE_LEAD = 0.12;                // smoothed control beyond this means one team leads the phase
+const MIN_PHASE_SECONDS = 50;
+const MOMENT_HALF_WINDOW = 40, MOMENT_MIN_GAP = 100, MOMENT_MIN_SWING = 0.16, MAX_MOMENTS = 10;
 
 // [team, kind, lane, tier, x, y]
 const STRUCTURES = [
@@ -298,7 +309,7 @@ function buildTracks(game) {
         const atBase = dist(pos, F) < 1500;
         if (diedHere) continue;
         if (spent > 300 || atBase) {
-          const walk = dist(pos, F) / 370; // seconds walking back out from fountain
+          const walk = dist(pos, F) / WALK_SPEED; // seconds walking back out from fountain
           const tr = clamp(b - walk - 10, a + 5, b - 1);
           p.kf.push({ t: tr, x: F.x, y: F.y, k: 2 });
           p.recalls = p.recalls || []; p.recalls.push({ t: tr, from: a, to: b, spent: Math.max(0, spent), inferred: true });
@@ -464,7 +475,7 @@ function buildStructures(game) {
     if (!s && e.position && cands.length) s = cands.reduce((a, b) => (dist(a, e.position) < dist(b, e.position) ? a : b));
     if (!s) continue;
     // inhibitors respawn after 5 minutes and nexus turrets after 3; other turrets stay down
-    s.downs.push([e.t, kind === 'inhib' ? e.t + 300 : s.tier === 'NEXUS_TURRET' ? e.t + 180 : Infinity]);
+    s.downs.push([e.t, kind === 'inhib' ? e.t + INHIB_RESPAWN : s.tier === 'NEXUS_TURRET' ? e.t + NEXUS_TURRET_RESPAWN : Infinity]);
     const label = kind === 'inhib' ? `${TEAM_NAME[s.team]} ${LANE_NAME[s.lane]} inhibitor` : `${TEAM_NAME[s.team]} ${LANE_NAME[s.lane] || ''} ${TIER_NAME[s.tier] || ''} tower`.replace(/\s+/g, ' ');
     game.structureEvents.push({ t: e.t, team: ENEMY[s.team], lost: s.team, kind, tier: s.tier, lane: s.lane, x: s.x, y: s.y, label, killer: e.killerId });
   }
@@ -489,7 +500,7 @@ function buildObjectives(game) {
   game.objectives = [];
   for (const o of list) {
     const last = game.objectives[game.objectives.length - 1];
-    if (o.key === 'HORDE' && last && last.key === 'HORDE' && last.team === o.team && o.t - last.t < 40) { last.count++; last.name = `${last.count} Voidgrubs`; continue; }
+    if (o.key === 'HORDE' && last && last.key === 'HORDE' && last.team === o.team && o.t - last.t < GRUB_GROUP_WINDOW) { last.count++; last.name = `${last.count} Voidgrubs`; continue; }
     game.objectives.push(Object.assign({ count: 1 }, o, o.key === 'HORDE' ? { name: '1 Voidgrub' } : {}));
   }
   game.souls = game.events.filter(e => e.type === 'DRAGON_SOUL_GIVEN' && (e.teamId === 100 || e.teamId === 200)).map(e => ({ t: e.t, team: e.teamId, name: e.name }));
@@ -508,16 +519,16 @@ function objectiveScore(game, t) {
   for (const s of game.structureEvents) {
     if (s.t > t) break;
     if (s.kind === 'tower') { sc[s.team] += tierW[s.tier] || 1; det[s.team].towers++; }
-    else if (t < s.t + 300) { sc[s.team] += 3; det[s.team].inhibs++; }
+    else if (t < s.t + INHIB_RESPAWN) { sc[s.team] += 3; det[s.team].inhibs++; }
   }
   for (const p of game.plates) if (p.t <= t) { sc[p.team] += 0.15; det[p.team].plates++; }
   for (const o of game.objectives) {
     if (o.t > t) break;
     const d = det[o.team];
     if (o.key === 'DRAGON') { sc[o.team] += 1; d.dragons++; }
-    else if (o.key === 'ELDER') { if (t < o.t + 150) { sc[o.team] += 7; d.elderBuff = true; } }
-    else if (o.key === 'BARON_NASHOR') { d.barons++; if (t < o.t + 180) { sc[o.team] += 7; d.baronBuff = true; } else sc[o.team] += 0.5; }
-    else if (o.key === 'RIFTHERALD') { d.heralds++; sc[o.team] += t < o.t + 240 ? 1 : 0.3; }
+    else if (o.key === 'ELDER') { if (t < o.t + ELDER_BUFF) { sc[o.team] += 7; d.elderBuff = true; } }
+    else if (o.key === 'BARON_NASHOR') { d.barons++; if (t < o.t + BARON_BUFF) { sc[o.team] += 7; d.baronBuff = true; } else sc[o.team] += 0.5; }
+    else if (o.key === 'RIFTHERALD') { d.heralds++; sc[o.team] += t < o.t + HERALD_EFFECT ? 1 : 0.3; }
     else if (o.key === 'HORDE') { d.grubs += o.count; sc[o.team] += 0.35 * o.count; }
     else if (o.key === 'ATAKHAN') { d.atakhan++; sc[o.team] += 1.5; }
   }
@@ -651,9 +662,9 @@ function buildWpSeries(game) {
   // League-client timelines don't record kill bounties: assume the standard 300g
   const hasBounty = game.events.some(e => e.type === 'CHAMPION_KILL' && 'bounty' in e);
   for (const k of game.kills) {
-    k.wpBounty = hasBounty ? k.bounty : 300;
+    k.wpBounty = hasBounty ? k.bounty : KILL_BOUNTY_DEFAULT;
     if (!game.goldEv[k.team] || !k.wpBounty) continue;
-    cum[k.team] += k.wpBounty * (k.assists.length ? 1.5 : 1);
+    cum[k.team] += k.wpBounty * (k.assists.length ? ASSIST_GOLD_FACTOR : 1);
     game.goldEv[k.team].push({ t: k.t, c: cum[k.team] });
   }
 }
@@ -676,15 +687,15 @@ function wpFeatures(game, t, inf) {
   for (const s of game.structureEvents) {
     if (s.t > t) break;
     const sg = s.team === 100 ? 1 : -1;
-    if (s.kind === 'tower') { const k = TOWER_FEAT[s.tier]; if (k && (s.tier !== 'NEXUS_TURRET' || t < s.t + 180)) f[k] += sg; } // nexus turrets grow back
-    else if (t < s.t + 300) f.inhib += sg;
+    if (s.kind === 'tower') { const k = TOWER_FEAT[s.tier]; if (k && (s.tier !== 'NEXUS_TURRET' || t < s.t + NEXUS_TURRET_RESPAWN)) f[k] += sg; } // nexus turrets grow back
+    else if (t < s.t + INHIB_RESPAWN) f.inhib += sg;
   }
   for (const o of game.objectives) {
     if (o.t > t) break;
     const sg = o.team === 100 ? 1 : -1;
     if (o.key === 'DRAGON') f.dragon += sg;
-    else if (o.key === 'ELDER') { if (t < o.t + 150) f.elder += sg; }
-    else if (o.key === 'BARON_NASHOR') { if (t < o.t + 180) f.baron += sg; }
+    else if (o.key === 'ELDER') { if (t < o.t + ELDER_BUFF) f.elder += sg; }
+    else if (o.key === 'BARON_NASHOR') { if (t < o.t + BARON_BUFF) f.baron += sg; }
     else if (o.key === 'HORDE') f.grubs += sg * o.count;
     else if (o.key === 'RIFTHERALD') f.herald += sg;
   }
@@ -714,7 +725,7 @@ function wpWithoutDeath(game, t, st, victim, d) {
   if (!game.wpm) return null;
   const f = Object.assign({}, st.f), sg = victim.team === 100 ? 1 : -1;
   if (isDead(victim, t) === d) { f.alive += sg; f.deadTime += sg * (d.respawn - t) / 60; }
-  if (d.kill && d.kill.wpBounty && t >= d.t) f.gold += sg * d.kill.wpBounty * (d.kill.assists.length ? 1.5 : 1) / 1000;
+  if (d.kill && d.kill.wpBounty && t >= d.t) f.gold += sg * d.kill.wpBounty * (d.kill.assists.length ? ASSIST_GOLD_FACTOR : 1) / 1000;
   return wpPredict(game.wpm, f, t).wp;
 }
 function wpAt(game, t) { const s = stateAt(game, t); return s.wp; }
@@ -787,7 +798,7 @@ function findFights(game) {
   const fights = [];
   for (const k of game.kills) {
     const f = fights[fights.length - 1];
-    if (f && k.t - f.end <= 15 && Math.hypot(k.x - f.x, k.y - f.y) < 3500) {
+    if (f && k.t - f.end <= FIGHT_GAP && Math.hypot(k.x - f.x, k.y - f.y) < FIGHT_RADIUS) {
       f.kills.push(k); f.end = k.t;
       f.x = f.kills.reduce((a, b) => a + b.x, 0) / f.kills.length; f.y = f.kills.reduce((a, b) => a + b.y, 0) / f.kills.length;
     } else fights.push({ start: k.t, end: k.t, x: k.x, y: k.y, kills: [k] });
@@ -819,14 +830,14 @@ function eventsBetween(game, a, b) {
 
 // ---------------------------------------------------------------- phases
 function findPhases(game) {
-  const sm = game.smooth.s30; const S = game.samples; const TH = 0.12;
+  const sm = game.smooth.s30; const S = game.samples;
   let segs = [];
   for (let i = 0; i < sm.length; i++) {
-    const st = sm[i] > TH ? 100 : sm[i] < -TH ? 200 : 0;
+    const st = sm[i] > PHASE_LEAD ? 100 : sm[i] < -PHASE_LEAD ? 200 : 0;
     const last = segs[segs.length - 1];
     if (last && last.state === st) last.b = i; else segs.push({ state: st, a: i, b: i });
   }
-  const minLen = Math.round(50 / SAMPLE_STEP);
+  const minLen = Math.round(MIN_PHASE_SECONDS / SAMPLE_STEP);
   for (let guard = 0; guard < 500 && segs.length > 1; guard++) {
     let idx = -1, len = 1e9;
     segs.forEach((s, i) => { const l = s.b - s.a + 1; if (l < minLen && l < len) { len = l; idx = i; } });
@@ -858,14 +869,14 @@ function findPhases(game) {
 
 // ---------------------------------------------------------------- key moments (biggest swings)
 function findMoments(game) {
-  const sm = game.smooth.s10; const W = Math.round(40 / SAMPLE_STEP); const S = game.samples;
+  const sm = game.smooth.s10; const W = Math.round(MOMENT_HALF_WINDOW / SAMPLE_STEP); const S = game.samples;
   const cands = [];
   for (let i = W; i < sm.length - W; i++) cands.push({ i, d: sm[i + W] - sm[i - W] });
   cands.sort((a, b) => Math.abs(b.d) - Math.abs(a.d));
   const picked = [];
   for (const c of cands) {
-    if (Math.abs(c.d) < 0.16 || picked.length >= 10) break;
-    if (picked.some(p => Math.abs(p.i - c.i) < 100 / SAMPLE_STEP)) continue;
+    if (Math.abs(c.d) < MOMENT_MIN_SWING || picked.length >= MAX_MOMENTS) break;
+    if (picked.some(p => Math.abs(p.i - c.i) < MOMENT_MIN_GAP / SAMPLE_STEP)) continue;
     picked.push(c);
   }
   return picked.sort((a, b) => a.i - b.i).map(c => {
@@ -884,7 +895,7 @@ function nearbyCounts(game, t, x, y, r) {
   return c;
 }
 function reviewObjectives(game) {
-  const items = game.objectives.filter(o => o.key !== 'HORDE' || o.count >= 2 || true).map(o => {
+  return game.objectives.map(o => {
     const taker = o.team, other = ENEMY[o.team], sign = taker === 100 ? 1 : -1;
     const before = smoothAt(game, 's30', Math.max(0, o.t - 45)) * sign;
     const st = stateAt(game, Math.max(0, o.t - 30));
@@ -901,7 +912,6 @@ function reviewObjectives(game) {
     else { verdict = 'Taken from an even state.'; tone = 'neutral'; }
     return { ...o, before, visionTaker, visionOther, near, aliveOther, aliveTaker, fightBefore, trades, verdict, tone };
   });
-  return items;
 }
 
 // ---------------------------------------------------------------- player report
@@ -948,7 +958,7 @@ function playerReport(game, pid) {
   });
 
   // zone / territory time
-  const zones = {}; let aliveT = 0, enemyHalf = 0, alone = 0, total = 0;
+  const zones = {}; let aliveT = 0, enemyHalf = 0, alone = 0;
   for (let t = 60; t < game.duration; t += 5) {
     if (isDead(p, t)) continue;
     const pos = posAt(p, t); aliveT += 5;
@@ -959,7 +969,6 @@ function playerReport(game, pid) {
     let nearest = 1e9;
     for (const q of game.ps) if (q.team === team && q.id !== p.id && !isDead(q, t)) nearest = Math.min(nearest, dist(pos, posAt(q, t)));
     if (nearest > 5000) alone += 5;
-    total++;
   }
   const deadTime = p.deaths.reduce((a, d) => a + (d.respawn - d.t), 0);
   return { p, deaths, objPresence, zones, aliveT, enemyHalf, alone, deadTime };
