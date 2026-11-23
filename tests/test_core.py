@@ -186,22 +186,35 @@ class RoflTests(SandboxTest):
 
     def test_corrupted_files_raise(self):
         good = fx.make_rofl(fx.make_game())
-        meta = lambda stats: b"RIOT" + b"\x00" * 60 + json.dumps({"gameLength": 1, "statsJson": stats}).encode()
-        cases = {
-            "empty": (b"", ValueError), "wrong magic": (b"NOPE" + good, ValueError), "no metadata": (b"RIOT" + b"\x00" * 200, ValueError),
-            "truncated metadata": (good[:len(good) - 40], ValueError), "stats not JSON": (meta("nope"), ValueError),
-            "stats is an object": (meta('{"a": 1}'), AttributeError), "player not an object": (meta("[1]"), AttributeError),
-            "non-numeric team": (meta('[{"TEAM": "BLUE"}]'), ValueError),
-        }
-        for name, (blob, err) in cases.items():
+        cases = {"empty": b"", "wrong magic": b"NOPE" + good, "no game data": b"RIOT" + b"\x00" * 200, "truncated metadata": good[:len(good) - 40],
+                 "metadata is not an object": b"RIOT" + b"\x00" * 60 + b'{"gameLength"]'}
+        for name, blob in cases.items():
             with self.subTest(name=name):
-                with self.assertRaises(err):
+                with self.assertRaisesRegex(ValueError, "replay") as c:
                     core.parse_rofl(self.write(blob))
+                self.assertNotIn("char ", str(c.exception))
 
-    def test_known_M4_reordered_metadata_keys_fail(self):
-        blob = b"RIOT" + b"\x00" * 60 + json.dumps({"lastGameChunkId": 1, "gameLength": 5, "statsJson": "[]"}).encode()
-        with self.assertRaisesRegex(ValueError, "metadata"):
-            core.parse_rofl(self.write(blob))
+    def test_odd_player_data_never_rejects_the_replay(self):
+        meta = lambda stats: b"RIOT" + b"\x00" * 60 + json.dumps({"gameLength": 1, "statsJson": stats}).encode()
+        cases = {"stats not JSON": ("nope", 0), "stats is an object": ('{"a": 1}', 0), "stats is null": ("null", 0), "player not an object": ('[1, {"SKIN": "Ahri"}]', 1)}
+        for name, (stats, n) in cases.items():
+            with self.subTest(name=name):
+                self.assertEqual(len(core.parse_rofl(self.write(meta(stats)))["players"]), n)
+
+    def test_non_numeric_fields_become_zero(self):
+        blob = b"RIOT" + b"\x00" * 60 + json.dumps({"gameLength": 1, "statsJson": '[{"TEAM": "BLUE", "CHAMPIONS_KILLED": "x", "GOLD_EARNED": null, "SKIN": "Ahri"}]'}).encode()
+        p = core.parse_rofl(self.write(blob))["players"][0]
+        self.assertEqual((p["team"], p["kills"], p["gold"], p["champion"]), (0, 0, 0, "Ahri"))
+
+    def test_reordered_metadata_keys_still_parse(self):
+        blob = b"RIOT" + b"\x00" * 60 + json.dumps({"lastGameChunkId": 1, "extra": {"a": 1}, "gameLength": 5, "statsJson": "[]"}).encode()
+        self.assertEqual(core.parse_rofl(self.write(blob))["gameLength"], 5)
+
+    def test_future_metadata_with_new_nested_fields(self):
+        stats = json.dumps(fx.rofl_stats(fx.make_game()))
+        blob = b"RIOT" + b"\x00" * 60 + b"packets {not json} " + json.dumps({"schema": {"v": 3}, "statsJson": stats, "gameLength": 9}).encode() + b"\x00trailing"
+        r = core.parse_rofl(self.write(blob))
+        self.assertEqual((r["gameLength"], len(r["players"])), (9, 10))
 
     def test_missing_file_raises(self):
         with self.assertRaises(FileNotFoundError):
@@ -248,7 +261,7 @@ class ListReplaysTests(SandboxTest):
         self.rofl("NA1-2.rofl", 2000)
         rows = core.list_replays()["replays"]
         self.assertEqual(len(rows), 2)
-        self.assertIn("RIOT", rows[1]["error"])
+        self.assertIn("not a League replay", rows[1]["error"])
 
     def test_cached_flag(self):
         self.rofl("NA1-5.rofl", 1000)

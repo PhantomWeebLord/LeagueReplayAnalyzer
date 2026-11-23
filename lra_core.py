@@ -66,6 +66,9 @@ DDRAGON_ASSET_TIMEOUT = 15
 ROFL_MAGIC = b"RIOT"
 ROFL_HEADER_BYTES = 64
 ROFL_METADATA_MARKER = b'{"gameLength"'
+ROFL_STATS_KEY = b'"statsJson"'               # fallback anchor if Riot ever reorders the metadata keys
+ROFL_MAX_BRACE_STEPS = 32
+ROFL_DAMAGED = "This replay file is damaged or incomplete."
 ROFL_TAIL_SEARCH_BYTES = (1 << 20, 8 << 20)   # the metadata sits near the end of the file: try the cheap reads first
 ROFL_MAX_SCAN_BYTES = 256 << 20               # never load more of a file than this into memory
 MAX_API_RESPONSE = 64 << 20
@@ -178,27 +181,55 @@ def replay_dir():
 
 
 # ---------------------------------------------------------------- rofl parsing
+def _metadata_text(blob: bytes):
+    """Text starting at the metadata JSON, or None. Prefers the usual first key, else walks back from the stats key."""
+    idx = blob.rfind(ROFL_METADATA_MARKER)
+    if idx >= 0:
+        return blob[idx:].decode("utf-8", "replace")
+    start = blob.rfind(ROFL_STATS_KEY)
+    for _ in range(ROFL_MAX_BRACE_STEPS):
+        if start <= 0:
+            return None
+        start = blob.rfind(b"{", 0, start)
+        if start < 0:
+            return None
+        text = blob[start:].decode("utf-8", "replace")
+        try:
+            obj, _end = json.JSONDecoder().raw_decode(text)
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and "statsJson" in obj:
+            return text
+    return None
+
+
 def _read_rofl_metadata(path: Path, size: int):
     """Return (first header bytes, text starting at the metadata JSON)."""
     with open(path, "rb") as f:
         head = f.read(ROFL_HEADER_BYTES)
         if not head.startswith(ROFL_MAGIC):
-            raise ValueError("Not a .rofl file (missing RIOT magic)")
-        idx = -1
+            raise ValueError("This is not a League replay file.")
+        text = None
         for tail_len in ROFL_TAIL_SEARCH_BYTES:
-            tail_len = min(size, tail_len)
-            f.seek(size - tail_len)
-            tail = f.read()
-            idx = tail.rfind(ROFL_METADATA_MARKER)
-            if idx >= 0:
+            f.seek(size - min(size, tail_len))
+            text = _metadata_text(f.read())
+            if text:
                 break
-        if idx < 0:
+        if not text:
             f.seek(max(0, size - ROFL_MAX_SCAN_BYTES))
-            tail = f.read()
-            idx = tail.find(ROFL_METADATA_MARKER)
-        if idx < 0:
-            raise ValueError("Could not find replay metadata block")
-    return head, tail[idx:].decode("utf-8", "replace")
+            text = _metadata_text(f.read())
+        if not text:
+            raise ValueError("Could not find the game data in this replay file.")
+    return head, text
+
+
+def _player_stats(raw) -> list:
+    """The per-player stats, keeping only well-formed entries. A replay can legitimately have none."""
+    try:
+        stats = json.loads(raw or "[]")
+    except (TypeError, ValueError):
+        return []
+    return [p for p in stats if isinstance(p, dict)] if isinstance(stats, list) else []
 
 
 def _ids_from_filename(stem: str):
@@ -211,8 +242,13 @@ def parse_rofl(path: Path) -> dict:
     """Return dict with version, gameLength, players, platform, gameId."""
     path = Path(path)
     head, text = _read_rofl_metadata(path, path.stat().st_size)
-    meta, _ = json.JSONDecoder().raw_decode(text)
-    stats = json.loads(meta.get("statsJson") or "[]")
+    try:
+        meta, _ = json.JSONDecoder().raw_decode(text)
+    except ValueError:
+        raise ValueError(ROFL_DAMAGED) from None
+    if not isinstance(meta, dict):
+        raise ValueError(ROFL_DAMAGED)
+    stats = _player_stats(meta.get("statsJson"))
     m = re.search(rb"(\d+\.\d+\.\d+\.\d+)", head)
     version = m.group(1).decode() if m else None
     platform, game_id = _ids_from_filename(path.stem)
@@ -220,7 +256,10 @@ def parse_rofl(path: Path) -> dict:
 
 
 def _stat(player: dict, key: str) -> int:
-    return int(player.get(key, 0) or 0)
+    try:
+        return int(player.get(key, 0) or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _summarize_player(p: dict) -> dict:
