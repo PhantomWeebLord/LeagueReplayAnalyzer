@@ -82,6 +82,23 @@ To retrain (for example on a new patch): put your own Riot API key in the app, r
 
 Add `?selftest` to the app's address to run every replay in your folder through the full pipeline and check for errors.
 
+## Supported games
+
+| Games | What happens |
+|---|---|
+| Ranked, normals, Clash and custom games on Summoner's Rift | Full review |
+| URF, One for All, Swiftplay and other special Rift modes | Review with a warning that grades are rough |
+| Patches outside the model's training range | Review with a warning that grades are approximate |
+| ARAM, Arena and other maps | Not supported; the app says so |
+
+## Tests and settings
+
+```powershell
+python tests/run_all.py
+```
+
+The suite uses only Python's standard library plus an installed Edge or Chrome. It runs in a sandbox and never touches League, your saved data or the internet. Optional settings are listed in [`.env.example`](.env.example). See the [hardening report](docs/hardening/REPORT.md) for the production review.
+
 ## Files
 
 - `server.py`: app server: HTTP, app window, single-instance, auto-exit, local-only request checks
@@ -93,6 +110,7 @@ Add `?selftest` to the app's address to run every replay in your folder through 
 - `train/`: high-elo downloader (`fetch_highelo.py`), training server and page (`train_server.py`, `train.html`, `train.js`); downloaded games go in `train/data/` (git-ignored)
 - `static/mapview.js`: cinematic map renderer · `static/live.js`: live coach · `static/trends.js`: Trends
 - `static/app.js`, `index.html`, `style.css`: the UI · `static/selftest.js`: self-test
+- `tests/`: unit, integration and browser tests with synthetic games · `docs/hardening/`: audit and production review
 - `build_exe.py`: builds `dist\Replay Analyzer v2.exe` and draws the logo
 - `config.json`, `cache/`, `live/`: your keys, cached matches and live recordings (git-ignored)
 
