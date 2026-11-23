@@ -301,10 +301,11 @@ class RiotGetTests(SandboxTest):
             core.riot_get("americas", "/x", "k")
         self.assertEqual(c.exception.status, 502)
 
-    def test_known_H8_cut_connection_escapes(self):
+    def test_cut_connection_becomes_502(self):
         self.patch(urllib.request, "urlopen", lambda *_a, **_k: Resp(read_error=http.client.IncompleteRead(b"{")))
-        with self.assertRaises(http.client.IncompleteRead):
+        with self.assertRaises(core.RiotError) as c:
             core.riot_get("americas", "/x", "k")
+        self.assertEqual(c.exception.status, 502)
 
     def test_known_H6_429_is_not_retried(self):
         calls = []
@@ -595,17 +596,27 @@ class LcuRequestTests(SandboxTest):
                     core.lcu_get("/x")
                 self.assertEqual(c.exception.status, 503)
 
-    def test_known_H8_lockfile_race_raises_raw_error(self):
+    def test_lockfile_race_is_a_client_error(self):
         self.patch(core, "find_lockfile", lambda: self.tmp / "gone")
-        with self.assertRaises(FileNotFoundError):
+        with self.assertRaises(core.RiotError) as c:
             core.lcu_get("/x")
+        self.assertEqual(c.exception.status, 503)
 
-    def test_known_H8_partial_lockfile_raises_raw_error(self):
+    def test_partial_lockfile_is_a_client_error(self):
         p = self.tmp / "partial"
         p.write_text("LeagueClient:1", "utf-8")
         self.patch(core, "find_lockfile", lambda: p)
-        with self.assertRaises(IndexError):
+        with self.assertRaises(core.RiotError) as c:
             core.lcu_get("/x")
+        self.assertEqual(c.exception.status, 503)
+
+    def test_cut_or_malformed_client_response_is_a_client_error(self):
+        for resp in (Resp(read_error=http.client.IncompleteRead(b"{")), Resp("not json")):
+            with self.subTest(resp=resp.body):
+                self.patch(urllib.request, "urlopen", lambda *_a, **_k: resp)
+                with self.assertRaises(core.RiotError) as c:
+                    core.lcu_get("/x")
+                self.assertEqual(c.exception.status, 503)
 
 
 class ChampionDataTests(SandboxTest):

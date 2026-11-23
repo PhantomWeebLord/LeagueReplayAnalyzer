@@ -2,6 +2,7 @@
 League Replay Analyzer - core: paths, config, .rofl parsing, Riot API, League client (LCU), Data Dragon assets.
 """
 import base64
+import http.client
 import json
 import os
 import re
@@ -299,7 +300,7 @@ def riot_get(region: str, path: str, key: str):
         raise RiotError(e.code, RIOT_ERROR_HINTS.get(e.code, body))
     except urllib.error.URLError as e:
         raise RiotError(502, f"Could not reach Riot API: {e.reason}")
-    except (TimeoutError, ConnectionError, ValueError) as e:  # slow or cut-off response: fall back to the League client
+    except (TimeoutError, ConnectionError, ValueError, http.client.HTTPException) as e:  # slow or cut-off response
         raise RiotError(502, f"Could not read Riot's response: {e}")
 
 
@@ -438,8 +439,11 @@ def lcu_request(path: str, method: str = "GET", body=None, timeout: float = LCU_
     lf = find_lockfile()
     if not lf:
         raise RiotError(503, "League client is not running (open League to load matches without an API key).")
-    parts = lf.read_text().split(":")
-    port, pw = parts[2], parts[3]
+    try:
+        parts = lf.read_text().split(":")
+        port, pw = parts[2], parts[3]
+    except (OSError, IndexError):  # the client is closing or still writing the file
+        raise RiotError(503, "League client not reachable. Is it logged in?")
     auth = base64.b64encode(f"riot:{pw}".encode()).decode()
     data = json.dumps(body).encode() if body is not None else None
     headers = {"Authorization": f"Basic {auth}"}
@@ -458,7 +462,7 @@ def lcu_request(path: str, method: str = "GET", body=None, timeout: float = LCU_
         except Exception:
             pass
         raise RiotError(e.code, f"client returned HTTP {e.code}: {msg}")
-    except (urllib.error.URLError, ConnectionError, OSError) as e:
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as e:
         raise RiotError(503, f"League client not reachable ({e}). Is it logged in?")
 
 
