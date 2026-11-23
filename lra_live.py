@@ -125,7 +125,7 @@ class LiveRecorder:
         headers = {"Content-Type": "application/json"} if data is not None else {}
         req = urllib.request.Request(url, data=json.dumps(data).encode() if data is not None else None, method=method, headers=headers)
         with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
-            raw = r.read().decode("utf-8")
+            raw = core.read_limited(r, core.MAX_API_RESPONSE).decode("utf-8")
             return json.loads(raw) if raw.strip() else None
 
     def live_get(self, path, timeout=1.5):

@@ -67,6 +67,9 @@ ROFL_MAGIC = b"RIOT"
 ROFL_HEADER_BYTES = 64
 ROFL_METADATA_MARKER = b'{"gameLength"'
 ROFL_TAIL_SEARCH_BYTES = (1 << 20, 8 << 20)   # the metadata sits near the end of the file: try the cheap reads first
+ROFL_MAX_SCAN_BYTES = 256 << 20               # never load more of a file than this into memory
+MAX_API_RESPONSE = 64 << 20
+MAX_ASSET_BYTES = 8 << 20
 
 # Windows API values
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
@@ -128,6 +131,14 @@ def load_config() -> dict:
     return dict(_last_config)
 
 
+def read_limited(response, limit: int) -> bytes:
+    """Read a network response, refusing one far larger than this kind of response can legitimately be."""
+    body = response.read(limit + 1)
+    if len(body) > limit:
+        raise ValueError("response too large")
+    return body
+
+
 def replace_file(src, dst):
     """os.replace, waiting briefly if another thread still has the target open."""
     for attempt in range(REPLACE_ATTEMPTS):
@@ -182,7 +193,7 @@ def _read_rofl_metadata(path: Path, size: int):
             if idx >= 0:
                 break
         if idx < 0:
-            f.seek(0)
+            f.seek(max(0, size - ROFL_MAX_SCAN_BYTES))
             tail = f.read()
             idx = tail.find(ROFL_METADATA_MARKER)
         if idx < 0:
@@ -357,7 +368,7 @@ def _riot_request(url: str, key: str):
     try:
         with urllib.request.urlopen(req, timeout=RIOT_TIMEOUT, context=ssl.create_default_context()) as r:
             RIOT_LIMITER.update(r.headers.get("X-App-Rate-Limit"))
-            return json.loads(r.read().decode("utf-8"))
+            return json.loads(read_limited(r, MAX_API_RESPONSE).decode("utf-8"))
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", "replace")[:300]
         if e.code == 403 and body.startswith("error code:"):   # Riot's firewall, not a verdict on the API key
@@ -593,7 +604,7 @@ def lcu_request(path: str, method: str = "GET", body=None, timeout: float = LCU_
     try:
         # the client uses a self-signed certificate on localhost
         with urllib.request.urlopen(req, timeout=timeout, context=ssl._create_unverified_context()) as r:
-            raw = r.read().decode("utf-8")
+            raw = read_limited(r, MAX_API_RESPONSE).decode("utf-8")
             return json.loads(raw) if raw.strip() else None
     except urllib.error.HTTPError as e:
         msg = e.read().decode("utf-8", "replace")[:200]
@@ -637,7 +648,7 @@ def champion_table():
     try:
         url = f"{DDRAGON_BASE}/cdn/{ddragon_version()}/data/en_US/champion.json"
         with urllib.request.urlopen(url, timeout=DDRAGON_CHAMPIONS_TIMEOUT) as r:
-            data = json.loads(r.read())["data"]
+            data = json.loads(read_limited(r, MAX_API_RESPONSE))["data"]
         _champ_table = [{"key": v["key"], "id": v["id"], "name": v["name"]} for v in data.values()]
         write_atomic(cf, json.dumps(_champ_table))
     except Exception:  # offline on a new patch: use the newest table we have, and try again next time
@@ -750,7 +761,7 @@ def ddragon_version() -> str:
     vf = CACHE / "ddragon_version.txt"
     try:
         with urllib.request.urlopen(f"{DDRAGON_BASE}/api/versions.json", timeout=DDRAGON_VERSIONS_TIMEOUT) as r:
-            latest = json.loads(r.read())[0]
+            latest = json.loads(read_limited(r, MAX_API_RESPONSE))[0]
         if not isinstance(latest, str):
             raise ValueError("unexpected version list")
         CACHE.mkdir(exist_ok=True)
@@ -790,7 +801,7 @@ def get_asset(kind, name):
     for u in urls:
         try:
             with urllib.request.urlopen(u, timeout=DDRAGON_ASSET_TIMEOUT) as r:
-                b = r.read()
+                b = read_limited(r, MAX_ASSET_BYTES)
             if _is_complete_png(b):
                 write_atomic_bytes(local, b)
                 return b

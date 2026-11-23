@@ -34,10 +34,10 @@ class Resp:
     def __exit__(self, *_a):
         return False
 
-    def read(self):
+    def read(self, n=-1):
         if self.read_error:
             raise self.read_error
-        return self.body
+        return self.body if n < 0 else self.body[:n]
 
 
 def http_error(url, code, body=b""):
@@ -168,6 +168,13 @@ class RoflTests(SandboxTest):
     def test_metadata_far_from_end_is_found(self):
         blob = b"RIOT" + b"\x00" * 80 + json.dumps({"gameLength": 7, "statsJson": "[]"}).encode() + b"\x00" * (9 << 20)
         self.assertEqual(core.parse_rofl(self.write(blob))["gameLength"], 7)
+
+    def test_whole_file_scan_is_bounded(self):
+        self.patch(core, "ROFL_MAX_SCAN_BYTES", 2 << 20)
+        self.patch(core, "ROFL_TAIL_SEARCH_BYTES", (1 << 10,))
+        blob = b"RIOT" + b"\x00" * 80 + json.dumps({"gameLength": 7, "statsJson": "[]"}).encode() + b"\x00" * (3 << 20)
+        with self.assertRaises(ValueError):
+            core.parse_rofl(self.write(blob))
 
     def test_last_metadata_block_wins(self):
         one = json.dumps({"gameLength": 1, "statsJson": "[]"}).encode()
@@ -302,6 +309,13 @@ class RiotGetTests(SandboxTest):
                 with self.assertRaises(core.RiotError) as c:
                     core.riot_get("americas", "/x", "k")
                 self.assertEqual(c.exception.status, 502)
+
+    def test_oversized_response_becomes_502(self):
+        self.patch(core, "MAX_API_RESPONSE", 10)
+        self.patch(urllib.request, "urlopen", lambda *_a, **_k: Resp('{"padding": "' + "x" * 50 + '"}'))
+        with self.assertRaises(core.RiotError) as c:
+            core.riot_get("americas", "/x", "k")
+        self.assertEqual(c.exception.status, 502)
 
     def test_bad_json_becomes_502(self):
         self.patch(urllib.request, "urlopen", lambda *_a, **_k: Resp("not json"))
@@ -875,6 +889,11 @@ class AssetTests(SandboxTest):
                 return Resp(PNG)
             raise urllib.error.URLError("x")
         self.patch(urllib.request, "urlopen", fake)
+
+    def test_oversized_image_is_refused(self):
+        self.patch(core, "MAX_ASSET_BYTES", 5)
+        self.net()
+        self.assertIsNone(core.get_asset("champ", "Ahri"))
 
     def test_truncated_download_is_not_saved(self):
         self.patch(urllib.request, "urlopen", lambda *_a, **_k: Resp(PNG[:12]))
