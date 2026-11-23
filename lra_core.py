@@ -49,6 +49,37 @@ PLATFORM_TO_REGION = {
     "OC1": "sea", "PH2": "sea", "SG2": "sea", "TH2": "sea", "TW2": "sea", "VN2": "sea",
 }
 
+USER_AGENT = "LeagueReplayAnalyzer/1.0"
+RIOT_API_BASE = "https://{region}.api.riotgames.com"
+DDRAGON_BASE = "https://ddragon.leagueoflegends.com"
+DDRAGON_FALLBACK_VERSION = "15.1.1"
+DDRAGON_OLD_MAP_VERSION = "6.8.1"     # the last version that still serves the plain Summoner's Rift image
+LCU_BASE = "https://127.0.0.1"
+RIOT_TIMEOUT = 30
+LCU_TIMEOUT = 30
+DDRAGON_VERSIONS_TIMEOUT = 15
+DDRAGON_CHAMPIONS_TIMEOUT = 20
+DDRAGON_ASSET_TIMEOUT = 15
+
+ROFL_MAGIC = b"RIOT"
+ROFL_HEADER_BYTES = 64
+ROFL_METADATA_MARKER = b'{"gameLength"'
+ROFL_TAIL_SEARCH_BYTES = (1 << 20, 8 << 20)   # the metadata sits near the end of the file: try the cheap reads first
+
+# Windows API values
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+ERROR_ACCESS_DENIED = 5
+STILL_ACTIVE = 259
+DETACHED_PROCESS = 0x00000008
+CREATE_NEW_PROCESS_GROUP = 0x00000200
+CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+VK_MENU = 0x12
+KEYEVENTF_KEYUP = 2
+SW_SHOWNOACTIVATE = 4
+SW_RESTORE = 9
+HWND_BOTTOM = 1
+SWP_NOSIZE_NOMOVE_NOACTIVATE = 0x0001 | 0x0002 | 0x0010
+
 _lock = threading.Lock()
 _meta_cache = {}  # path -> (mtime, summary)
 
@@ -82,65 +113,73 @@ def replay_dir():
 
 
 # ---------------------------------------------------------------- rofl parsing
-def parse_rofl(path: Path):
-    """Return dict with version, gameLength, players, platform, gameId."""
-    path = Path(path)
-    size = path.stat().st_size
+def _read_rofl_metadata(path: Path, size: int):
+    """Return (first header bytes, text starting at the metadata JSON)."""
     with open(path, "rb") as f:
-        head = f.read(64)
-        if not head.startswith(b"RIOT"):
+        head = f.read(ROFL_HEADER_BYTES)
+        if not head.startswith(ROFL_MAGIC):
             raise ValueError("Not a .rofl file (missing RIOT magic)")
-        # Metadata JSON lives near the end of the file in ROFL v2; search the tail first.
         idx = -1
-        for tail_len in (1 << 20, 8 << 20):
+        for tail_len in ROFL_TAIL_SEARCH_BYTES:
             tail_len = min(size, tail_len)
             f.seek(size - tail_len)
             tail = f.read()
-            idx = tail.rfind(b'{"gameLength"')
+            idx = tail.rfind(ROFL_METADATA_MARKER)
             if idx >= 0:
                 break
         if idx < 0:
             f.seek(0)
             tail = f.read()
-            idx = tail.find(b'{"gameLength"')
+            idx = tail.find(ROFL_METADATA_MARKER)
         if idx < 0:
             raise ValueError("Could not find replay metadata block")
-    text = tail[idx:].decode("utf-8", "replace")
+    return head, tail[idx:].decode("utf-8", "replace")
+
+
+def _ids_from_filename(stem: str):
+    """'NA1-5123456789' -> ('NA1', '5123456789'); (None, None) for a renamed file."""
+    m = re.match(r"([A-Za-z]+\d*)-(\d+)", stem)
+    return (m.group(1).upper(), m.group(2)) if m else (None, None)
+
+
+def parse_rofl(path: Path) -> dict:
+    """Return dict with version, gameLength, players, platform, gameId."""
+    path = Path(path)
+    head, text = _read_rofl_metadata(path, path.stat().st_size)
     meta, _ = json.JSONDecoder().raw_decode(text)
     stats = json.loads(meta.get("statsJson") or "[]")
-
     m = re.search(rb"(\d+\.\d+\.\d+\.\d+)", head)
     version = m.group(1).decode() if m else None
-
-    platform, game_id = None, None
-    fm = re.match(r"([A-Za-z]+\d*)-(\d+)", path.stem)
-    if fm:
-        platform, game_id = fm.group(1).upper(), fm.group(2)
-
+    platform, game_id = _ids_from_filename(path.stem)
     return summarize(meta, stats, version, platform, game_id, path.name)
 
 
-def summarize(meta, stats, version, platform, game_id, filename):
-    players = []
-    for p in stats:
-        players.append({
-            "puuid": p.get("PUUID"),
-            "name": p.get("RIOT_ID_GAME_NAME") or p.get("NAME"),
-            "tag": p.get("RIOT_ID_TAG_LINE"),
-            "champion": p.get("SKIN"),
-            "team": int(p.get("TEAM", 0) or 0),
-            "position": p.get("TEAM_POSITION") or p.get("INDIVIDUAL_POSITION"),
-            "win": p.get("WIN") == "Win",
-            "kills": int(p.get("CHAMPIONS_KILLED", 0) or 0),
-            "deaths": int(p.get("NUM_DEATHS", 0) or 0),
-            "assists": int(p.get("ASSISTS", 0) or 0),
-            "gold": int(p.get("GOLD_EARNED", 0) or 0),
-            "visionScore": int(p.get("VISION_SCORE", 0) or 0),
-            "wardsPlaced": int(p.get("WARD_PLACED", 0) or 0),
-            "wardsKilled": int(p.get("WARD_KILLED", 0) or 0),
-            "cs": int(p.get("MINIONS_KILLED", 0) or 0) + int(p.get("NEUTRAL_MINIONS_KILLED", 0) or 0),
-            "level": int(p.get("LEVEL", 0) or 0),
-        })
+def _stat(player: dict, key: str) -> int:
+    return int(player.get(key, 0) or 0)
+
+
+def _summarize_player(p: dict) -> dict:
+    return {
+        "puuid": p.get("PUUID"),
+        "name": p.get("RIOT_ID_GAME_NAME") or p.get("NAME"),
+        "tag": p.get("RIOT_ID_TAG_LINE"),
+        "champion": p.get("SKIN"),
+        "team": _stat(p, "TEAM"),
+        "position": p.get("TEAM_POSITION") or p.get("INDIVIDUAL_POSITION"),
+        "win": p.get("WIN") == "Win",
+        "kills": _stat(p, "CHAMPIONS_KILLED"),
+        "deaths": _stat(p, "NUM_DEATHS"),
+        "assists": _stat(p, "ASSISTS"),
+        "gold": _stat(p, "GOLD_EARNED"),
+        "visionScore": _stat(p, "VISION_SCORE"),
+        "wardsPlaced": _stat(p, "WARD_PLACED"),
+        "wardsKilled": _stat(p, "WARD_KILLED"),
+        "cs": _stat(p, "MINIONS_KILLED") + _stat(p, "NEUTRAL_MINIONS_KILLED"),
+        "level": _stat(p, "LEVEL"),
+    }
+
+
+def summarize(meta: dict, stats: list, version, platform, game_id, filename: str) -> dict:
     return {
         "file": filename,
         "version": version,
@@ -148,7 +187,7 @@ def summarize(meta, stats, version, platform, game_id, filename):
         "platform": platform,
         "gameId": game_id,
         "matchId": f"{platform}_{game_id}" if platform and game_id else None,
-        "players": players,
+        "players": [_summarize_player(p) for p in stats],
     }
 
 
@@ -189,21 +228,23 @@ class RiotError(Exception):
         self.status = status
 
 
-def riot_get(region, path, key):
-    url = f"https://{region}.api.riotgames.com{path}"
-    req = urllib.request.Request(url, headers={"X-Riot-Token": key, "User-Agent": "LeagueReplayAnalyzer/1.0"})
+RIOT_ERROR_HINTS = {
+    401: "API key missing or invalid.",
+    403: "API key rejected (development keys expire every 24h - generate a new one).",
+    404: "Match not found (Riot keeps match history for about 2 years; custom games may not be available).",
+    429: "Rate limited by Riot - wait a minute and try again.",
+}
+
+
+def riot_get(region: str, path: str, key: str):
+    url = RIOT_API_BASE.format(region=region) + path
+    req = urllib.request.Request(url, headers={"X-Riot-Token": key, "User-Agent": USER_AGENT})
     try:
-        with urllib.request.urlopen(req, timeout=30, context=ssl.create_default_context()) as r:
+        with urllib.request.urlopen(req, timeout=RIOT_TIMEOUT, context=ssl.create_default_context()) as r:
             return json.loads(r.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", "replace")[:300]
-        hint = {
-            401: "API key missing or invalid.",
-            403: "API key rejected (development keys expire every 24h - generate a new one).",
-            404: "Match not found (Riot keeps match history for about 2 years; custom games may not be available).",
-            429: "Rate limited by Riot - wait a minute and try again.",
-        }.get(e.code, body)
-        raise RiotError(e.code, hint)
+        raise RiotError(e.code, RIOT_ERROR_HINTS.get(e.code, body))
     except urllib.error.URLError as e:
         raise RiotError(502, f"Could not reach Riot API: {e.reason}")
     except (TimeoutError, ConnectionError, ValueError) as e:  # slow or cut-off response: fall back to the League client
@@ -213,17 +254,27 @@ def riot_get(region, path, key):
 rejected_keys = set()
 
 
-def get_match(match_id, refresh=False):
+def _read_cached_match(path: Path):
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text("utf-8"))
+    except (OSError, ValueError):  # damaged cache entry: download it again
+        return None
+
+
+def _fetch_riot_match(region: str, match_id: str, key: str) -> dict:
+    match = riot_get(region, f"/lol/match/v5/matches/{match_id}", key)
+    timeline = riot_get(region, f"/lol/match/v5/matches/{match_id}/timeline", key)
+    return {"source": "riot-api", "match": match, "timeline": timeline}
+
+
+def get_match(match_id: str, refresh: bool = False) -> dict:
     """Match + timeline. Sources: local cache -> Riot API (needs key) -> running League client (no key)."""
     CACHE.mkdir(exist_ok=True)
     cf = CACHE / f"{match_id}.json"
     key = load_config().get("apiKey")
-    cached = None
-    if cf.exists():
-        try:
-            cached = json.loads(cf.read_text("utf-8"))
-        except (OSError, ValueError):  # damaged cache entry: download it again
-            cached = None
+    cached = _read_cached_match(cf)
     if cached:
         # an API key gives richer data (wards, items, levels) than the client; upgrade client-sourced caches
         upgradable = cached.get("source") == "lcu" and key and not cached.get("apiMissing")
@@ -239,9 +290,7 @@ def get_match(match_id, refresh=False):
         errors.append("Riot API: key was rejected (expired?) - paste a fresh one")
     elif key:
         try:
-            match = riot_get(region, f"/lol/match/v5/matches/{match_id}", key)
-            timeline = riot_get(region, f"/lol/match/v5/matches/{match_id}/timeline", key)
-            data = {"source": "riot-api", "match": match, "timeline": timeline}
+            data = _fetch_riot_match(region, match_id, key)
             write_atomic(cf, json.dumps(data))
             return data
         except RiotError as e:
@@ -271,9 +320,14 @@ def get_match(match_id, refresh=False):
 
 
 # ---------------------------------------------------------------- League client (LCU) - no API key needed
+def _configured_league_dir():
+    d = load_config().get("leagueDir")
+    return Path(d) if d else None
+
+
 def find_lockfile():
-    cfg_dir = load_config().get("leagueDir")
-    cands = [Path(cfg_dir) / "lockfile"] if cfg_dir else []
+    cfg_dir = _configured_league_dir()
+    cands = [cfg_dir / "lockfile"] if cfg_dir else []
     for drive in "CDEFGH":
         cands += [Path(f"{drive}:/Riot Games/League of Legends/lockfile"),
                   Path(f"{drive}:/Program Files/Riot Games/League of Legends/lockfile"),
@@ -298,12 +352,12 @@ def _pid_image(pid):
     k.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
     k.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
     k.CloseHandle.argtypes = [wintypes.HANDLE]
-    h = k.OpenProcess(0x1000, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
+    h = k.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
     if not h:
-        return "" if ctypes.get_last_error() == 5 else None  # access denied: it exists
+        return "" if ctypes.get_last_error() == ERROR_ACCESS_DENIED else None  # access denied: it exists
     try:
         code = wintypes.DWORD()
-        if k.GetExitCodeProcess(h, ctypes.byref(code)) and code.value != 259:  # not STILL_ACTIVE
+        if k.GetExitCodeProcess(h, ctypes.byref(code)) and code.value != STILL_ACTIVE:
             return None
         buf, n = ctypes.create_unicode_buffer(1024), wintypes.DWORD(1024)
         return buf.value if k.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(n)) else ""
@@ -328,7 +382,7 @@ def process_name(pid):
     return Path(img).name if img else None
 
 
-def lcu_request(path, method="GET", body=None, timeout=30):
+def lcu_request(path: str, method: str = "GET", body=None, timeout: float = LCU_TIMEOUT):
     lf = find_lockfile()
     if not lf:
         raise RiotError(503, "League client is not running (open League to load matches without an API key).")
@@ -339,7 +393,7 @@ def lcu_request(path, method="GET", body=None, timeout=30):
     headers = {"Authorization": f"Basic {auth}"}
     if data is not None:
         headers["Content-Type"] = "application/json"
-    req = urllib.request.Request(f"https://127.0.0.1:{port}{path}", data=data, method=method, headers=headers)
+    req = urllib.request.Request(f"{LCU_BASE}:{port}{path}", data=data, method=method, headers=headers)
     try:
         # the client uses a self-signed certificate on localhost
         with urllib.request.urlopen(req, timeout=timeout, context=ssl._create_unverified_context()) as r:
@@ -356,7 +410,7 @@ def lcu_request(path, method="GET", body=None, timeout=30):
         raise RiotError(503, f"League client not reachable ({e}). Is it logged in?")
 
 
-def lcu_get(path, timeout=30):
+def lcu_get(path: str, timeout: float = LCU_TIMEOUT):
     return lcu_request(path, timeout=timeout)
 
 
@@ -374,8 +428,8 @@ def champion_table():
         _champ_table = json.loads(cf.read_text("utf-8"))
         return _champ_table
     try:
-        url = f"https://ddragon.leagueoflegends.com/cdn/{ddragon_version()}/data/en_US/champion.json"
-        with urllib.request.urlopen(url, timeout=20) as r:
+        url = f"{DDRAGON_BASE}/cdn/{ddragon_version()}/data/en_US/champion.json"
+        with urllib.request.urlopen(url, timeout=DDRAGON_CHAMPIONS_TIMEOUT) as r:
             data = json.loads(r.read())["data"]
         _champ_table = [{"key": v["key"], "id": v["id"], "name": v["name"]} for v in data.values()]
         write_atomic(cf, json.dumps(_champ_table))
@@ -416,7 +470,36 @@ def replay_meta_for(match_id):
     return None
 
 
-def lcu_match(match_id):
+LANE_TO_POSITION = {"TOP": "TOP", "JUNGLE": "JUNGLE", "MIDDLE": "MIDDLE", "MID": "MIDDLE", "BOTTOM": "BOTTOM", "BOT": "BOTTOM"}
+SMITE_SPELL_ID = 11
+
+
+def _guess_position(p: dict) -> str:
+    """Custom games often have no position: Smite means jungle, and the bot lane's support is marked by its role."""
+    tline = p.get("timeline") or {}
+    if SMITE_SPELL_ID in (p.get("spell1Id"), p.get("spell2Id")):
+        return "JUNGLE"
+    if tline.get("role") == "DUO_SUPPORT":
+        return "UTILITY"
+    return LANE_TO_POSITION.get(tline.get("lane", ""), "")
+
+
+def _lcu_participant(p: dict, player: dict, replay_player: dict, names: dict) -> dict:
+    st = p.get("stats", {})
+    champ = replay_player.get("champion") or names.get(str(p.get("championId")), str(p.get("championId")))
+    return {
+        "participantId": p["participantId"], "puuid": player.get("puuid"), "teamId": p["teamId"], "championName": champ,
+        "riotIdGameName": player.get("gameName") or player.get("summonerName") or champ, "riotIdTagline": player.get("tagLine", ""),
+        "teamPosition": replay_player.get("position") or _guess_position(p),
+        "kills": st.get("kills", 0), "deaths": st.get("deaths", 0), "assists": st.get("assists", 0), "win": bool(st.get("win")),
+        "goldEarned": st.get("goldEarned", 0), "visionScore": st.get("visionScore", replay_player.get("visionScore", 0)),
+        "wardsPlaced": st.get("wardsPlaced", replay_player.get("wardsPlaced", 0)), "wardsKilled": st.get("wardsKilled", replay_player.get("wardsKilled", 0)),
+        "visionWardsBoughtInGame": st.get("visionWardsBoughtInGame", 0), "champLevel": st.get("champLevel", 0),
+        "totalMinionsKilled": st.get("totalMinionsKilled", 0), "neutralMinionsKilled": st.get("neutralMinionsKilled", 0),
+    }
+
+
+def lcu_match(match_id: str) -> dict:
     gid = match_id.split("_", 1)[1]
     g = lcu_get(f"/lol-match-history/v1/games/{gid}")
     tl = lcu_get(f"/lol-match-history/v1/game-timelines/{gid}")
@@ -428,25 +511,8 @@ def lcu_match(match_id):
     ident = {i["participantId"]: i.get("player", {}) for i in g.get("participantIdentities", [])}
     parts = []
     for p in g.get("participants", []):
-        pl = ident.get(p["participantId"], {})
-        st = p.get("stats", {})
-        mp = meta_by_puuid.get(pl.get("puuid"), {})
-        champ = mp.get("champion") or names.get(str(p.get("championId")), str(p.get("championId")))
-        tline = p.get("timeline") or {}
-        lane = tline.get("lane", "")
-        # custom games often have no position: Smite means jungle, and the bot lane's support is marked by its role
-        guessed = "JUNGLE" if 11 in (p.get("spell1Id"), p.get("spell2Id")) else "UTILITY" if tline.get("role") == "DUO_SUPPORT" \
-            else {"TOP": "TOP", "JUNGLE": "JUNGLE", "MIDDLE": "MIDDLE", "MID": "MIDDLE", "BOTTOM": "BOTTOM", "BOT": "BOTTOM"}.get(lane, "")
-        parts.append({
-            "participantId": p["participantId"], "puuid": pl.get("puuid"), "teamId": p["teamId"], "championName": champ,
-            "riotIdGameName": pl.get("gameName") or pl.get("summonerName") or champ, "riotIdTagline": pl.get("tagLine", ""),
-            "teamPosition": mp.get("position") or guessed,
-            "kills": st.get("kills", 0), "deaths": st.get("deaths", 0), "assists": st.get("assists", 0), "win": bool(st.get("win")),
-            "goldEarned": st.get("goldEarned", 0), "visionScore": st.get("visionScore", mp.get("visionScore", 0)),
-            "wardsPlaced": st.get("wardsPlaced", mp.get("wardsPlaced", 0)), "wardsKilled": st.get("wardsKilled", mp.get("wardsKilled", 0)),
-            "visionWardsBoughtInGame": st.get("visionWardsBoughtInGame", 0), "champLevel": st.get("champLevel", 0),
-            "totalMinionsKilled": st.get("totalMinionsKilled", 0), "neutralMinionsKilled": st.get("neutralMinionsKilled", 0),
-        })
+        player = ident.get(p["participantId"], {})
+        parts.append(_lcu_participant(p, player, meta_by_puuid.get(player.get("puuid"), {}), names))
     match = {"metadata": {"matchId": match_id}, "info": {
         "gameId": g.get("gameId"), "gameDuration": g.get("gameDuration"), "mapId": g.get("mapId"), "queueId": g.get("queueId"),
         "gameMode": g.get("gameMode"), "gameVersion": g.get("gameVersion"), "gameCreation": g.get("gameCreation"),
@@ -478,12 +544,12 @@ def ddragon_version():
         return _dd_version
     vf = CACHE / "ddragon_version.txt"
     try:
-        with urllib.request.urlopen("https://ddragon.leagueoflegends.com/api/versions.json", timeout=15) as r:
+        with urllib.request.urlopen(f"{DDRAGON_BASE}/api/versions.json", timeout=DDRAGON_VERSIONS_TIMEOUT) as r:
             _dd_version = json.loads(r.read())[0]
             CACHE.mkdir(exist_ok=True)
             vf.write_text(_dd_version)
     except Exception:
-        _dd_version = vf.read_text().strip() if vf.exists() else "15.1.1"
+        _dd_version = vf.read_text().strip() if vf.exists() else DDRAGON_FALLBACK_VERSION
     return _dd_version
 
 
@@ -495,20 +561,20 @@ def get_asset(kind, name):
     adir.mkdir(parents=True, exist_ok=True)
     if kind == "map":
         local = adir / "map11.png"
-        urls = [f"https://ddragon.leagueoflegends.com/cdn/{ddragon_version()}/img/map/map11.png",
-                "https://ddragon.leagueoflegends.com/cdn/6.8.1/img/map/map11.png"]
+        urls = [f"{DDRAGON_BASE}/cdn/{ddragon_version()}/img/map/map11.png",
+                f"{DDRAGON_BASE}/cdn/{DDRAGON_OLD_MAP_VERSION}/img/map/map11.png"]
     elif kind == "champ":
         name = re.sub(r"[^A-Za-z0-9]", "", name)
         name = CHAMP_FIX.get(name, name)
         local = adir / f"champ_{name}.png"
-        urls = [f"https://ddragon.leagueoflegends.com/cdn/{ddragon_version()}/img/champion/{name}.png"]
+        urls = [f"{DDRAGON_BASE}/cdn/{ddragon_version()}/img/champion/{name}.png"]
     else:
         return None
     if local.exists():
         return local.read_bytes()
     for u in urls:
         try:
-            with urllib.request.urlopen(u, timeout=15) as r:
+            with urllib.request.urlopen(u, timeout=DDRAGON_ASSET_TIMEOUT) as r:
                 b = r.read()
             local.write_bytes(b)
             return b
@@ -520,7 +586,7 @@ def get_asset(kind, name):
 # ---------------------------------------------------------------- League game config (Replay API toggle)
 def game_cfg_path():
     lf = find_lockfile()
-    d = Path(load_config().get("leagueDir")) if load_config().get("leagueDir") else (lf.parent if lf else None)
+    d = _configured_league_dir() or (lf.parent if lf else None)
     if not d:
         dirs = league_install_dirs()
         d = dirs[0] if dirs else None
@@ -582,9 +648,8 @@ def client_patch():
 
 
 def league_install_dirs():
-    out = []
-    if load_config().get("leagueDir"):
-        out.append(Path(load_config()["leagueDir"]))
+    configured = _configured_league_dir()
+    out = [configured] if configured else []
     lf = find_lockfile()
     if lf:
         out.append(lf.parent)
@@ -600,6 +665,23 @@ def league_install_dirs():
 _ip = {"v": None, "at": 0.0}
 
 
+def _exe_major_minor(exe: str):
+    """(major, minor) from a Windows exe's version resource, or None."""
+    import ctypes
+    from ctypes import wintypes
+    size = ctypes.windll.version.GetFileVersionInfoSizeW(exe, None)
+    if not size:
+        return None
+    buf = ctypes.create_string_buffer(size)
+    if not ctypes.windll.version.GetFileVersionInfoW(exe, 0, size, buf):
+        return None
+    ptr, ln = ctypes.c_void_p(), wintypes.UINT()
+    if not ctypes.windll.version.VerQueryValueW(buf, "\\", ctypes.byref(ptr), ctypes.byref(ln)):
+        return None
+    ms = ctypes.cast(ptr, ctypes.POINTER(wintypes.DWORD * 4))[0][2]  # VS_FIXEDFILEINFO.dwFileVersionMS
+    return ms >> 16, ms & 0xFFFF
+
+
 def installed_game_patch():
     """Patch of the installed game read from the game exe's version (works with the League client closed)."""
     now = time.time()
@@ -608,23 +690,8 @@ def installed_game_patch():
     _ip["at"] = now
     if os.name != "nt":
         return None
-    import ctypes
-    from ctypes import wintypes
-    best = None
-    for d in league_install_dirs():
-        exe = str(d / "Game" / "League of Legends.exe")
-        size = ctypes.windll.version.GetFileVersionInfoSizeW(exe, None)
-        if not size:
-            continue
-        buf = ctypes.create_string_buffer(size)
-        if not ctypes.windll.version.GetFileVersionInfoW(exe, 0, size, buf):
-            continue
-        ptr, ln = ctypes.c_void_p(), wintypes.UINT()
-        if not ctypes.windll.version.VerQueryValueW(buf, "\\", ctypes.byref(ptr), ctypes.byref(ln)):
-            continue
-        ms = ctypes.cast(ptr, ctypes.POINTER(wintypes.DWORD * 4))[0][2]  # VS_FIXEDFILEINFO.dwFileVersionMS
-        v = (ms >> 16, ms & 0xFFFF)
-        best = max(best, v) if best else v
+    versions = [v for v in (_exe_major_minor(str(d / "Game" / "League of Legends.exe")) for d in league_install_dirs()) if v]
+    best = max(versions) if versions else None
     _ip["v"] = f"{best[0]}.{best[1]}" if best else None
     return _ip["v"]
 
@@ -684,9 +751,9 @@ def start_league_client():
         raise RiotError(404, "Could not find the Riot Client. Start League yourself.")
     args = [exe, "--launch-product=league_of_legends", "--launch-patchline=live"]
     # fully detached: League must keep running when this app closes
-    flags = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
     try:
-        subprocess.Popen(args, close_fds=True, creationflags=flags | 0x01000000)  # + CREATE_BREAKAWAY_FROM_JOB
+        subprocess.Popen(args, close_fds=True, creationflags=flags | CREATE_BREAKAWAY_FROM_JOB)
     except OSError:
         subprocess.Popen(args, close_fds=True, creationflags=flags)
     return True
@@ -778,9 +845,9 @@ def league_window_info():
 
 def _force_foreground(u, hwnd):
     # Windows only lets the foreground app hand focus over; a synthetic Alt press satisfies that rule.
-    u.keybd_event(0x12, 0, 0, None)
+    u.keybd_event(VK_MENU, 0, 0, None)
     u.SetForegroundWindow(hwnd)
-    u.keybd_event(0x12, 0, 2, None)
+    u.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, None)
 
 
 def arrange_windows(action, app_title):
@@ -790,7 +857,6 @@ def arrange_windows(action, app_title):
     u = _user32()
     if not u:
         return False
-    SW_RESTORE, SW_SHOWNOACTIVATE = 9, 4
     if action == "app":
         aw = find_window(app_title, prefix=True)
         if not aw:
@@ -810,6 +876,6 @@ def arrange_windows(action, app_title):
     if action == "behind":
         if u.IsIconic(lw):
             u.ShowWindow(lw, SW_SHOWNOACTIVATE)
-        u.SetWindowPos(lw, 1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)  # HWND_BOTTOM, NOSIZE|NOMOVE|NOACTIVATE
+        u.SetWindowPos(lw, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOSIZE_NOMOVE_NOACTIVATE)
         return True
     return False
