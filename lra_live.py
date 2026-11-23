@@ -115,6 +115,7 @@ class LiveRecorder:
         self._phase = (0, None)
         self._cs = (0, None)
         self._index = {}       # file -> (mtime, summary)
+        self._unsaved = None   # a session whose last save failed
         self.last_error = None
 
     # ------------------------------------------------ http to the game client
@@ -189,9 +190,9 @@ class LiveRecorder:
         end = next((e for e in evs if e.get("EventName") == "GameEnd"), None)
         if end:
             s["ended"], s["result"], s["endedAt"] = True, end.get("Result"), now
-            self._save(s)
+            self._save_safely(s)
         elif now - self._flush_at > FLUSH_EVERY:
-            self._save(s)
+            self._save_safely(s)
             self._flush_at = now
 
     def _on_data(self, data):
@@ -204,6 +205,7 @@ class LiveRecorder:
         players = [norm_player(p) for p in data.get("allPlayers") or []]
         sig = sorted(f"{p['team']}|{p['championId']}|{p['riotId']}" for p in players)
         with self.lock:
+            self._retry_unsaved()
             s = self.session
             if self._is_active_player_blip(s, mode, sig):
                 return
@@ -219,11 +221,12 @@ class LiveRecorder:
 
     def _on_no_game(self):
         with self.lock:
+            self._retry_unsaved()
             s = self.session
             if s and time.time() - s["lastSeen"] > GAME_GONE_AFTER:
                 if s["mode"] == "play" and not s["ended"] and s["snaps"]:
                     s["ended"], s["endedAt"], s["endReason"] = True, time.time(), "game client closed"
-                    self._save(s)
+                    self._save_safely(s)
                 if s["mode"] == "spectate":
                     self.session = None
             if not s or time.time() - s["lastSeen"] > GAME_GONE_AFTER:
@@ -250,7 +253,7 @@ class LiveRecorder:
         s = self.session
         if s and s["mode"] == "play" and s["snaps"] and not s["ended"]:
             s["ended"], s["endedAt"], s["endReason"] = True, time.time(), "new game detected"
-            self._save(s)
+            self._save_safely(s)
 
     @staticmethod
     def _game_id_from_client():
@@ -287,9 +290,23 @@ class LiveRecorder:
                 with self.lock:
                     s["gameId"], s["platform"], s["matchId"] = int(gid), plat, f"{plat}_{gid}"
                     if s["mode"] == "play":
-                        self._save(s)
+                        self._save_safely(s)
                 return
             time.sleep(RESOLVE_RETRY)
+
+    def _save_safely(self, s):
+        """A failed save must not lose the game: remember it and try again on the next poll."""
+        try:
+            self._save(s)
+            if self._unsaved is s:
+                self._unsaved = None
+        except OSError as e:
+            self._unsaved = s
+            self.last_error = repr(e)
+
+    def _retry_unsaved(self):
+        if self._unsaved is not None:
+            self._save_safely(self._unsaved)
 
     def _save(self, s):
         core.LIVE_DIR.mkdir(parents=True, exist_ok=True)

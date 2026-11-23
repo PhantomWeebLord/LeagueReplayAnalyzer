@@ -206,17 +206,33 @@ class RecorderTests(SandboxTest):
         self.rec._on_data(payload(10))
         self.assertEqual(len(self.files()), 1)
 
-    def test_known_H2_failed_final_save_is_never_retried(self):
+    def test_failed_final_save_is_retried(self):
         self.rec._on_data(payload(10))
         calls = []
-        def fails(_s):
+        def flaky(_s):
             calls.append(1)
-            raise PermissionError("busy")
-        self.rec._save = fails
-        with self.assertRaises(PermissionError):
-            self.rec._on_data(payload(12, events=[{"EventName": "GameEnd", "Result": "Win"}]))
+            if len(calls) == 1:
+                raise PermissionError("busy")
+        self.rec._save = flaky
+        self.rec._on_data(payload(12, events=[{"EventName": "GameEnd", "Result": "Win"}]))
+        self.assertIn("busy", self.rec.last_error)
         self.rec._on_data(payload(14, events=[{"EventName": "GameEnd", "Result": "Win"}]))
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(calls), 2)
+        self.rec._on_data(payload(16, events=[{"EventName": "GameEnd", "Result": "Win"}]))
+        self.assertEqual(len(calls), 2)
+
+    def test_failed_save_is_retried_after_the_game_closes(self):
+        self.rec._on_data(payload(10))
+        calls = []
+        def flaky(_s):
+            calls.append(1)
+            if len(calls) == 1:
+                raise OSError("disk full")
+        self.rec._save = flaky
+        self.rec.session["lastSeen"] = time.time() - 10
+        self.rec._on_no_game()
+        self.rec._on_no_game()
+        self.assertEqual(len(calls), 2)
 
     def test_no_game_after_timeout_ends_session(self):
         self.rec._on_data(payload(10))
