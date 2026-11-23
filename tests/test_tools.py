@@ -327,6 +327,19 @@ class FetchMainTests(SandboxTest):
         self.run_main("--target", "4")
         self.assertIn("NA1_1000", self.saved())
 
+    def test_game_that_always_fails_is_eventually_skipped(self):
+        real = self.fake_get
+        def broken(url, key):
+            if "/matches/NA1_1000" in url:
+                self.calls.append(url)
+                raise fh.Transient("always")
+            return real(url, key)
+        self.patch(fh, "get", broken)
+        self.run_main("--target", "9")
+        self.assertEqual(len(self.saved()), 3)
+        self.assertEqual(sum("/matches/NA1_1000" in u for u in self.calls), fh.MAX_GAME_ATTEMPTS)
+        self.assertIn("NA1_1000", json.loads((self.tmp / "state.json").read_text("utf-8"))["skipped"])
+
     def test_expired_key_saves_state_and_exits(self):
         self.fail_once["/matches/NA1_1001"] = fh.KeyExpired("401")
         with self.assertRaises(SystemExit) as c:

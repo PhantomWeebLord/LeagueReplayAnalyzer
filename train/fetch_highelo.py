@@ -37,6 +37,7 @@ MIN_MAJOR_PATCH = 16
 QUEUE_LOW_WATER = 60        # top the match queue up from the next player below this size
 MAX_BAD_PLAYER_IDS = 5      # this many HTTP 400s in a row means the stored ladder belongs to an older key
 REQUEUE_DELAY = 5
+MAX_GAME_ATTEMPTS = 5       # a game that keeps failing is skipped, or the run could loop on it forever
 SAVE_STATE_EVERY = 10       # the state file is over 1 MB: do not rewrite it after every game
 LOG_EVERY = 25
 SECONDS_PER_DAY = 86400
@@ -247,6 +248,7 @@ class Fetcher:
         self.queued = set()
         self.bad_ids = 0
         self.start_time = 0
+        self.attempts = collections.Counter()
 
     def _match_url(self, suffix):
         return f"https://{self.region}.api.riotgames.com/lol/match/v5/matches/{suffix}"
@@ -289,9 +291,13 @@ class Fetcher:
             if puuid:
                 self._queue_player_games(puuid)
 
-    def _try_later(self):
+    def _try_later(self, mid):
+        self.attempts[mid] += 1
+        if self.attempts[mid] >= MAX_GAME_ATTEMPTS:
+            return self._reject(mid)
         self.st["queue"].append(self.st["queue"].pop(0))
         time.sleep(REQUEUE_DELAY)
+        return None
 
     def _reject(self, mid):
         self.st["queue"].pop(0)
@@ -320,13 +326,13 @@ class Fetcher:
         try:
             m = get(self._match_url(mid), self.key)
         except (Transient, BadPlayerId):
-            return self._try_later()
+            return self._try_later(mid)
         if not _is_training_game(m):
             return self._reject(mid)
         try:
             tl = get(self._match_url(f"{mid}/timeline"), self.key)
         except (Transient, BadPlayerId):
-            return self._try_later()
+            return self._try_later(mid)
         if not tl or not tl.get("info"):
             return self._reject(mid)
         return self._save_game(mid, m, tl)
