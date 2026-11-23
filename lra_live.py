@@ -18,9 +18,22 @@ from datetime import datetime
 import lra_core as core
 
 RAW_CHAMP_PREFIX = "game_character_displayname_"
+SNAPSHOT_EVERY = 2.0         # seconds of game time between recorded snapshots
+FLUSH_EVERY = 30             # seconds between saves of a game in progress
+GAME_GONE_AFTER = 6          # seconds without an answer before a game counts as closed
+RESUME_TOLERANCE = 5         # a reconnect may report a game clock this many seconds earlier
+NEW_GAME_REWIND = 30         # a clock this far behind an ended game means the same lobby started a new game
+POLL_IN_GAME = 1.0
+POLL_IDLE = 3.0
+POLL_AFTER_ERROR = 2.0
+CLIENT_STATE_TTL = 3         # seconds the League client's phase and champ select are cached
+RESOLVE_WINDOW = 20 * 60     # how long to keep looking for a recording's match id
+RESOLVE_RETRY = 5
+HISTORY_LOOKBACK = 900       # a history game created this long before the recording can still be the same game
+IN_GAME_PHASES = ("InProgress", "Reconnect", "WaitingForStats", "PreEndOfGame", "EndOfGame")
 
 
-def norm_player(p):
+def norm_player(p: dict) -> dict:
     rid = p.get("riotId") or p.get("summonerName") or ""
     name = p.get("riotIdGameName") or rid.split("#")[0]
     tag = p.get("riotIdTagLine") or (rid.split("#", 1)[1] if "#" in rid else "")
@@ -30,7 +43,7 @@ def norm_player(p):
             "team": 100 if p.get("team") == "ORDER" else 200, "position": p.get("position") or "", "isBot": bool(p.get("isBot"))}
 
 
-def make_snapshot(data, t, players):
+def make_snapshot(data: dict, t: float, players: list) -> dict:
     """Compact row per player (same order as session players):
     [level, kills, deaths, assists, cs, visionScore, dead, respawnTimer, [[itemId, count], ...]]"""
     ap = data.get("activePlayer") or {}
@@ -51,34 +64,42 @@ def make_snapshot(data, t, players):
     return {"t": round(t, 1), "g": round(float(ap.get("currentGold", 0) or 0)), "hp": round(st.get("currentHealth", 0) / mx, 3) if mx else None, "p": rows}
 
 
-def match_replay(players, since=None):
+def _lobby_key(players: list) -> set:
+    return {(p["team"], str(p["championId"]).lower()) for p in players}
+
+
+def _same_lobby(want: set, have: set) -> bool:
+    return len(want & have) >= max(2, len(want) - 2)
+
+
+def match_replay(players: list, since=None):
     """Find the replay file whose lobby matches these players (team + champion) -> (gameId, platform).
     since: for a game being played, only replays written after it started (a custom lobby can repeat the same picks)."""
-    want = {(p["team"], str(p["championId"]).lower()) for p in players}
+    want = _lobby_key(players)
     best = None
     for r in core.list_replays().get("replays", []):
         if since and (r.get("mtime") or 0) < since:
             continue
         have = {(q.get("team"), str(q.get("champion")).lower()) for q in r.get("players", [])}
         n = len(want & have)
-        if r.get("gameId") and n >= max(2, len(want) - 2) and (not best or n > best[0]):
+        if r.get("gameId") and _same_lobby(want, have) and (not best or n > best[0]):
             best = (n, r)
     return (int(best[1]["gameId"]), best[1]["platform"]) if best else None
 
 
-def match_history(players, since=None):
+def match_history(players: list, since=None):
     """After a game: find it in the League client's recent match history by champions -> gameId."""
     try:
         h = core.lcu_get("/lol-match-history/v1/products/lol/current-summoner/matches?begIndex=0&endIndex=6", timeout=10)
     except core.RiotError:
         return None
     names = core.champion_names()
-    want = {(p["team"], str(p["championId"]).lower()) for p in players}
+    want = _lobby_key(players)
     for g in ((h or {}).get("games") or {}).get("games") or []:
-        if since and (g.get("gameCreation") or 0) / 1000 < since - 900:  # an earlier game with the same picks
+        if since and (g.get("gameCreation") or 0) / 1000 < since - HISTORY_LOOKBACK:  # an earlier game with the same picks
             continue
         have = {(q.get("teamId"), str(names.get(str(q.get("championId")), "")).lower()) for q in g.get("participants") or []}
-        if len(want & have) >= max(2, len(want) - 2):
+        if _same_lobby(want, have):
             return int(g["gameId"])
     return None
 
@@ -126,18 +147,52 @@ class LiveRecorder:
             try:
                 if isinstance(data, dict) and data.get("gameData") and data.get("allPlayers"):
                     self._on_data(data)
-                    time.sleep(1.0)
+                    time.sleep(POLL_IN_GAME)
                 else:
                     self._on_no_game()
-                    time.sleep(3.0)
+                    time.sleep(POLL_IDLE)
             except Exception as e:  # never let the recorder thread die
                 self.last_error = repr(e)
-                time.sleep(2.0)
+                time.sleep(POLL_AFTER_ERROR)
 
     def busy(self):
         """True while a game you are playing is being recorded (keeps the app alive)."""
         with self.lock:
             return self.status == "play" and self.session is not None and not self.session.get("ended")
+
+    @staticmethod
+    def _is_active_player_blip(s, mode, sig):
+        """The game briefly answered without the active player: don't split the recording in two."""
+        return bool(s) and s["mode"] == "play" and mode == "spectate" and not s["ended"] and s["sig"] == sig
+
+    @staticmethod
+    def _resume_if_reconnected(s, mode, sig, t):
+        """A freeze or reconnect, not the end of the game: keep recording."""
+        if s and mode == "play" and s["mode"] == "play" and s["sig"] == sig and s["ended"] \
+                and s.get("endReason") == "game client closed" and t >= s["gameTime"] - RESUME_TOLERANCE:
+            s["ended"] = False
+            s.pop("endedAt", None)
+            s.pop("endReason", None)
+
+    @staticmethod
+    def _starts_new_session(s, mode, sig, t):
+        if s is None or s["sig"] != sig or s["mode"] != mode:
+            return True
+        return mode == "play" and bool(s.get("ended")) and t + NEW_GAME_REWIND < s["gameTime"]  # same lobby, new game
+
+    def _record(self, s, data, t, now):
+        if not s["snaps"] or t - s["snaps"][-1]["t"] >= SNAPSHOT_EVERY:
+            s["snaps"].append(make_snapshot(data, t, s["players"]))
+        evs = (data.get("events") or {}).get("Events") or []
+        if evs:
+            s["events"] = evs
+        end = next((e for e in evs if e.get("EventName") == "GameEnd"), None)
+        if end:
+            s["ended"], s["result"], s["endedAt"] = True, end.get("Result"), now
+            self._save(s)
+        elif now - self._flush_at > FLUSH_EVERY:
+            self._save(s)
+            self._flush_at = now
 
     def _on_data(self, data):
         now = time.time()
@@ -150,46 +205,28 @@ class LiveRecorder:
         sig = sorted(f"{p['team']}|{p['championId']}|{p['riotId']}" for p in players)
         with self.lock:
             s = self.session
-            if s and s["mode"] == "play" and mode == "spectate" and not s["ended"] and s["sig"] == sig:
-                return  # the game briefly answered without the active player: don't split the recording in two
-            if s and mode == "play" and s["mode"] == "play" and s["sig"] == sig and s["ended"] \
-                    and s.get("endReason") == "game client closed" and t >= s["gameTime"] - 5:
-                s["ended"] = False  # a freeze or reconnect, not the end of the game: keep recording
-                s.pop("endedAt", None)
-                s.pop("endReason", None)
-            new = s is None or s["sig"] != sig or s["mode"] != mode
-            if not new and mode == "play" and s.get("ended") and t + 30 < s["gameTime"]:
-                new = True  # same lobby, new game
-            if new:
+            if self._is_active_player_blip(s, mode, sig):
+                return
+            self._resume_if_reconnected(s, mode, sig, t)
+            if self._starts_new_session(s, mode, sig, t):
                 self._finalize()
                 s = self._new_session(mode, players, sig, gd, ap if not spectate else {})
             s["gameTime"] = t
             s["lastSeen"] = now
             self.status = mode
             if mode == "play" and not s["ended"]:
-                if not s["snaps"] or t - s["snaps"][-1]["t"] >= 2.0:
-                    s["snaps"].append(make_snapshot(data, t, s["players"]))
-                evs = (data.get("events") or {}).get("Events") or []
-                if evs:
-                    s["events"] = evs
-                end = next((e for e in evs if e.get("EventName") == "GameEnd"), None)
-                if end:
-                    s["ended"], s["result"], s["endedAt"] = True, end.get("Result"), now
-                    self._save(s)
-                elif now - self._flush_at > 30:
-                    self._save(s)
-                    self._flush_at = now
+                self._record(s, data, t, now)
 
     def _on_no_game(self):
         with self.lock:
             s = self.session
-            if s and time.time() - s["lastSeen"] > 6:
+            if s and time.time() - s["lastSeen"] > GAME_GONE_AFTER:
                 if s["mode"] == "play" and not s["ended"] and s["snaps"]:
                     s["ended"], s["endedAt"], s["endReason"] = True, time.time(), "game client closed"
                     self._save(s)
                 if s["mode"] == "spectate":
                     self.session = None
-            if not s or time.time() - s["lastSeen"] > 6:
+            if not s or time.time() - s["lastSeen"] > GAME_GONE_AFTER:
                 self.status = "idle"
 
     def _new_session(self, mode, players, sig, gd, ap):
@@ -215,27 +252,36 @@ class LiveRecorder:
             s["ended"], s["endedAt"], s["endReason"] = True, time.time(), "new game detected"
             self._save(s)
 
+    @staticmethod
+    def _game_id_from_client():
+        try:
+            gf = core.lcu_get("/lol-gameflow/v1/session", timeout=5) or {}
+            if gf.get("phase") in IN_GAME_PHASES:
+                return (gf.get("gameData") or {}).get("gameId") or None
+        except Exception:
+            pass
+        return None
+
+    def _lookup_game_id(self, s):
+        """(game id, platform or None), from the client's game session, a matching replay, or the recent match history."""
+        gid = plat = None
+        if s["mode"] == "play":
+            gid = self._game_id_from_client()
+        if not gid:
+            m = match_replay(s["players"], s["startedAt"] if s["mode"] == "play" else None)
+            if m:
+                gid, plat = m
+        if not gid and s.get("ended"):
+            gid = match_history(s["players"], s["startedAt"])
+        return gid, plat
+
     def _resolve_ids(self, s):
-        """Link the session to its match id: League client game session, else a matching replay file,
-        else (after the game) the client's recent match history."""
-        deadline = time.time() + 20 * 60
+        """Link the session to its match id, retrying until it can be found."""
+        deadline = time.time() + RESOLVE_WINDOW
         while time.time() < deadline and not self.stop:
             if s is not self.session and (s.get("gameId") or s["mode"] == "spectate"):
                 return  # replaced: a replay session nobody watches any more doesn't need an id
-            gid = plat = None
-            if s["mode"] == "play":
-                try:
-                    gf = core.lcu_get("/lol-gameflow/v1/session", timeout=5) or {}
-                    if gf.get("phase") in ("InProgress", "Reconnect", "WaitingForStats", "PreEndOfGame", "EndOfGame"):
-                        gid = (gf.get("gameData") or {}).get("gameId") or None
-                except Exception:
-                    pass
-            if not gid:
-                m = match_replay(s["players"], s["startedAt"] if s["mode"] == "play" else None)
-                if m:
-                    gid, plat = m
-            if not gid and s.get("ended"):
-                gid = match_history(s["players"], s["startedAt"])
+            gid, plat = self._lookup_game_id(s)
             if gid:
                 plat = plat or core.lcu_platform()
                 with self.lock:
@@ -243,7 +289,7 @@ class LiveRecorder:
                     if s["mode"] == "play":
                         self._save(s)
                 return
-            time.sleep(5)
+            time.sleep(RESOLVE_RETRY)
 
     def _save(self, s):
         core.LIVE_DIR.mkdir(parents=True, exist_ok=True)
@@ -256,7 +302,7 @@ class LiveRecorder:
     # ------------------------------------------------ league client state (cached briefly)
     def phase(self):
         at, val = self._phase
-        if time.time() - at > 3:
+        if time.time() - at > CLIENT_STATE_TTL:
             try:
                 val = core.lcu_get("/lol-gameflow/v1/gameflow-phase", timeout=3)
             except Exception:
@@ -264,18 +310,21 @@ class LiveRecorder:
             self._phase = (time.time(), val)
         return val
 
+    @staticmethod
+    def _my_pick(cs):
+        cell = cs.get("localPlayerCellId")
+        mine = next((m for m in cs.get("myTeam") or [] if m.get("cellId") == cell), None)
+        if not mine:
+            return None
+        cid = mine.get("championId") or mine.get("championPickIntent") or 0
+        return {"championKey": cid, "champion": core.champion_names().get(str(cid)) if cid else None,
+                "position": (mine.get("assignedPosition") or "").upper(), "locked": bool(mine.get("championId"))}
+
     def champ_select(self):
         at, val = self._cs
-        if time.time() - at > 3:
-            val = None
+        if time.time() - at > CLIENT_STATE_TTL:
             try:
-                cs = core.lcu_get("/lol-champ-select/v1/session", timeout=3) or {}
-                cell = cs.get("localPlayerCellId")
-                mine = next((m for m in cs.get("myTeam") or [] if m.get("cellId") == cell), None)
-                if mine:
-                    cid = mine.get("championId") or mine.get("championPickIntent") or 0
-                    val = {"championKey": cid, "champion": core.champion_names().get(str(cid)) if cid else None,
-                           "position": (mine.get("assignedPosition") or "").upper(), "locked": bool(mine.get("championId"))}
+                val = self._my_pick(core.lcu_get("/lol-champ-select/v1/session", timeout=3) or {})
             except Exception:
                 val = None
             self._cs = (time.time(), val)
@@ -297,6 +346,17 @@ class LiveRecorder:
             out["champSelect"] = self.champ_select()
         return out
 
+    @staticmethod
+    def _session_summary(f):
+        try:
+            s = json.loads(f.read_text("utf-8"))
+            me = s["players"][s["me"]] if s.get("me") is not None else None
+            return {"id": s["id"], "matchId": s.get("matchId"), "gameMode": s.get("gameMode"), "result": s.get("result"),
+                    "ended": s.get("ended"), "startedAt": s.get("startedAt"), "snaps": len(s.get("snaps") or []),
+                    "champion": me and me.get("championId"), "duration": (s.get("snaps") or [{}])[-1].get("t")}
+        except Exception as e:
+            return {"id": f.stem, "error": str(e)}
+
     def sessions(self):
         core.LIVE_DIR.mkdir(parents=True, exist_ok=True)
         out = []
@@ -304,15 +364,7 @@ class LiveRecorder:
             mt = f.stat().st_mtime
             c = self._index.get(f.name)
             if not c or c[0] != mt:
-                try:
-                    s = json.loads(f.read_text("utf-8"))
-                    me = s["players"][s["me"]] if s.get("me") is not None else None
-                    summ = {"id": s["id"], "matchId": s.get("matchId"), "gameMode": s.get("gameMode"), "result": s.get("result"),
-                            "ended": s.get("ended"), "startedAt": s.get("startedAt"), "snaps": len(s.get("snaps") or []),
-                            "champion": me and me.get("championId"), "duration": (s.get("snaps") or [{}])[-1].get("t")}
-                except Exception as e:
-                    summ = {"id": f.stem, "error": str(e)}
-                c = (mt, summ)
+                c = (mt, self._session_summary(f))
                 self._index[f.name] = c
             out.append(c[1])
         return out
