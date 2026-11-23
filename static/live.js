@@ -120,6 +120,12 @@ function updateFollowChip() {
   c.classList.toggle('hidden', !S.follow || (typeof RS !== 'undefined' && RS.view === 'replay'));
 }
 
+// reads the list when writing: two games can be waiting for their match data at the same time
+function markDebriefed(id) {
+  const done = store.get('debriefed', []);
+  if (!done.includes(id)) store.set('debriefed', [...done, id].slice(-50));
+}
+
 async function maybeDebrief(s) {
   const done = store.get('debriefed', []);
   if (done.includes(s.id) || LV.debrief === s.id || (LV.gaveUp || []).includes(s.id)) return;
@@ -133,7 +139,7 @@ async function maybeDebrief(s) {
       const data = await api('/api/match?id=' + encodeURIComponent(cur.matchId)).catch(() => ({ error: 'offline' }));
       if (!data.error) {
         await loadLiveSessions();
-        store.set('debriefed', [...done, s.id].slice(-50));
+        markDebriefed(s.id);
         LV.debrief = null;
         await openDebrief(cur);
         return;

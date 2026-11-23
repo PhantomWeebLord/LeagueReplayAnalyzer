@@ -48,6 +48,11 @@ test('live status text', () => {
 });
 test('champ card', () => { ok(champCard(null, null).includes('Lock in')); ok(champCard({ champ: { n: 0 } }, 'Ahri').includes('No past games')); withRows([trendRow()], () => { const p = focusPlan('Ahri', 'MIDDLE'); ok(champCard(p, 'Ahri').includes('1 game')); }); });
 test('renderFocus', () => { ok(renderFocus(null, '').includes('Open a few of your replays')); withRows([trendRow()], () => ok(renderFocus(focusPlan('Ahri', 'MIDDLE'), 'CARD').includes('CARD'))); });
+test('finished debriefs are recorded without losing others', () => {
+  const saved = store.get('debriefed', []);
+  store.set('debriefed', ['a']); markDebriefed('b'); eq(store.get('debriefed', []), ['a', 'b']); markDebriefed('b'); eq(store.get('debriefed', []), ['a', 'b']);
+  store.set('debriefed', Array.from({ length: 50 }, (_, i) => 'x' + i)); markDebriefed('new'); const v = store.get('debriefed', []); eq(v.length, 50); eq(v.at(-1), 'new'); store.set('debriefed', saved);
+});
 test('live session lookup', async () => {
   const saved = [LV.sessions, LV.sessionCache]; LV.sessions = [{ id: 'x', matchId: 'NA1_1', snaps: 5 }, { id: 'y', matchId: 'NA1_2', snaps: 50 }]; LV.sessionCache = { y: { id: 'y' } };
   try { eq(await liveSessionFor(null), null); eq(await liveSessionFor('NA1_1'), null); eq(await liveSessionFor('NA1_2'), { id: 'y' }); eq(await liveSessionFor('NA1_3'), null); } finally { [LV.sessions, LV.sessionCache] = saved; }
