@@ -243,7 +243,7 @@ class ApiTests(ServerCase):
         core.save_config({"apiKey": key})
         st, data, _ = self.req("GET", "/api/config")
         self.assertNotIn(key.encode(), data)
-        self.assertEqual(json.loads(data)["keyHint"], "RGAPI-…90ab")
+        self.assertEqual(json.loads(data)["keyHint"], "…90ab")
 
     def test_config_post_key(self):
         core.rejected_keys.add("NEWKEY")

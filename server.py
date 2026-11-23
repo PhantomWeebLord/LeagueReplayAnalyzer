@@ -155,7 +155,7 @@ class Handler(BaseHTTPRequestHandler):
     def _get_config(self):
         cfg = core.load_config()
         k = cfg.get("apiKey") or ""
-        return self.send_json({"hasKey": bool(k), "keyHint": (k[:6] + "…" + k[-4:]) if k else "",
+        return self.send_json({"hasKey": bool(k), "keyHint": "…" + k[-4:] if k else "",
                                "replayDir": str(core.replay_dir()), "lcu": bool(core.find_lockfile()),
                                "keyRejected": bool(k) and k in core.rejected_keys, "dataDir": str(core.DATA),
                                "frozen": core.FROZEN, "live": bool(RECORDER), "version": VERSION})
