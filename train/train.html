@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Win-probability training</title>
+<style>
+  :root { color-scheme: dark; --bg: #0b0f17; --text: #e6e9ef; --muted: #8b93a1; --line: #243042; }
+  body { background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, sans-serif; margin: 16px; }
+  button { background: #1b2433; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; cursor: pointer; margin: 0 6px 6px 0; }
+  #status { color: var(--muted); margin: 8px 0; }
+  pre { background: #111826; border: 1px solid var(--line); border-radius: 8px; padding: 10px; white-space: pre-wrap; max-height: 70vh; overflow: auto; }
+</style>
+</head>
+<body>
+<h1>Win-probability training</h1>
+<p>Fits the win-probability model on the downloaded Master+ games, then calibrates the action grades. Results are written to <code>static/wp_model.js</code> and <code>train/out/</code>.</p>
+<div>
+  <button id="bAll">Run everything</button>
+  <button id="bFit">1–2. Extract + fit</button>
+  <button id="bNorms">3. Calibrate grades</button>
+  <button id="bVal">4. Validate</button>
+</div>
+<div id="status">idle</div>
+<pre id="log"></pre>
+<script src="/static/model.js"></script>
+<script src="/static/review.js"></script>
+<script src="/train/train.js"></script>
+</body>
+</html>

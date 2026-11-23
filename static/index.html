@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Replay Analyzer v2</title>
+<link rel="icon" type="image/png" href="logo.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">Replay<b>Analyzer</b></div>
+  <select id="replaySelect" title="Replays in your League replay folder"><option>Loading replays…</option></select>
+  <label class="btn" for="fileInput" title="Open a .rofl from anywhere">Open .rofl…</label>
+  <input type="file" id="fileInput" accept=".rofl" hidden>
+  <button id="reloadBtn" class="btn ghost" title="Re-download match data for this game">↻</button>
+  <button id="trendsBtn" class="btn" title="Your accuracy and recurring mistakes across all your replays">Trends</button>
+  <button id="liveBtn" class="btn" title="Live coach: focus before your game, automatic debrief after it, follow-along for replays">Live</button>
+  <div class="spacer"></div>
+  <span id="keyStatus" class="key-status"></span>
+  <input id="apiKey" type="password" placeholder="RGAPI-xxxxxxxx-…" autocomplete="off" spellcheck="false">
+  <button id="saveKey" class="btn">Save key</button>
+</header>
+
+<div id="banner" class="banner hidden"></div>
+
+<div id="welcome" class="welcome">
+  <h1>See who controls the map — minute by minute</h1>
+  <p>Pick a replay from the list above (it reads your <code>Documents\League of Legends\Replays</code> folder), click <em>Open .rofl…</em>, or <b>drag a .rofl file onto this page</b>. You'll get a full game review: every action graded, accuracy per player, and a map of who controlled what, when.</p>
+  <div class="steps">
+    <div><b>1</b><span><strong>Keep the League client open</strong> — the app reads match timelines from it, no setup needed (works for ranked, normals and custom games).</span></div>
+    <div><b>2</b><span>Optional: for richer data on ranked/normal games (wards, item purchases, level-ups), get a free API key at <a href="https://developer.riotgames.com" target="_blank" rel="noopener">developer.riotgames.com</a> and paste it top right. Dev keys expire every 24h.</span></div>
+    <div><b>3</b><span>Choose a replay. Match data is cached locally, so each game only downloads once.</span></div>
+  </div>
+  <p class="muted small">Why not read positions straight from the .rofl? The replay stores the game's network packets encrypted per patch. The app reads the replay's metadata to identify the game and players, then loads Riot's official timeline (every player's position each minute, plus every kill, tower and objective).</p>
+  <p class="muted small">Replay Analyzer isn't endorsed by Riot Games and doesn't reflect the views or opinions of Riot Games or anyone officially involved in producing or managing Riot Games properties. Riot Games, and all associated properties are trademarks or registered trademarks of Riot Games, Inc.</p>
+</div>
+
+<main id="live" class="hidden">
+  <section class="card wide">
+    <div class="card-head"><h3>Live coach</h3><span id="lvStatus" class="lv-status"></span></div>
+    <div id="lvBody"></div>
+  </section>
+</main>
+
+<main id="trends" class="hidden">
+  <section class="card wide">
+    <div class="card-head"><h3>Your trends across all replays</h3>
+      <div class="tr-actions"><span id="trProgress" class="small"></span><button id="trRefresh" class="btn ghost" title="Re-analyse every game">Re-analyse</button></div></div>
+    <div id="trBody"></div>
+  </section>
+</main>
+
+<main id="app" class="hidden">
+  <section class="card map-card">
+    <div class="map-head">
+      <div id="matchTitle" class="match-title"></div>
+      <div class="view-switch" id="viewSwitch">
+        <button data-v="replay" class="on">League replay</button><button data-v="map">Recreated map</button>
+      </div>
+    </div>
+    <div class="map-subhead">
+      <div class="toggles" id="mapToggles">
+        <button id="followChip" class="follow-chip hidden" title="Stop following the League replay">● Following replay</button>
+        <button id="watchLeague" class="btn ghost small hidden" title="Open this replay in the League client; this window follows along">▶ Watch in League</button>
+        <label><input type="checkbox" id="tHeat" checked> Territory</label>
+        <label><input type="checkbox" id="tTrails" checked> Trails</label>
+        <label><input type="checkbox" id="tNames"> Names</label>
+        <label><input type="checkbox" id="tEvents" checked> Effects</label>
+        <label title="Camera zooms onto fights and objectives; fights play in slow motion"><input type="checkbox" id="tDirector" checked> Director cam</label>
+      </div>
+      <div class="toggles hidden" id="rsToggles">
+        <label title="League's fog of war"><input type="checkbox" id="rsFog" checked> Fog of war</label>
+        <label title="League's own replay control bar and timeline (this app's controls below do the same)"><input type="checkbox" id="rsBar"> League's replay bar</label>
+        <button id="rsFront" class="btn ghost small" title="Bring League's own window to the front to use its controls directly">Use League's window</button>
+        <button id="rsFull" class="btn ghost small" title="Full screen (double-click the replay)">⛶ Full screen</button>
+        <button id="rsClose" class="btn ghost small" title="Close the replay in League">✕ Close replay</button>
+      </div>
+    </div>
+    <div class="map-wrap" id="mapWrap">
+      <canvas id="map"></canvas>
+      <video id="rsVideo" class="rs-video hidden" autoplay muted playsinline></video>
+      <div id="rsPanel" class="rs-panel hidden"></div>
+      <div id="rsCamTip" class="rs-camtip hidden"><span><b>Camera tip:</b> League's camera starts at the fountain and only League can move it. In League's window, click your champion's portrait on the side of the screen to lock the camera on you; it stays locked here.</span>
+        <button class="btn small" id="rsCamTipGo">Go to League's window</button><button class="btn ghost small" id="rsCamTipX" title="Got it">✕</button></div>
+      <div id="mapTip" class="tip hidden"></div>
+      <div id="coachBar" class="coach-bar hidden"></div>
+    </div>
+    <div id="rsPlayers" class="rs-players hidden"></div>
+    <div class="controls">
+      <button id="playBtn" class="btn play" title="Play / pause (Space)">▶</button>
+      <span id="clock" class="clock">0:00</span>
+      <input type="range" id="scrub" min="0" max="100" step="0.1" value="0">
+      <select id="speed" title="Playback speed">
+        <option value="1">1×</option><option value="4">4×</option><option value="10" selected>10×</option>
+        <option value="20">20×</option><option value="40">40×</option><option value="80">80×</option>
+      </select>
+    </div>
+    <p class="muted small note" id="mapNote"></p>
+  </section>
+
+  <section class="side">
+    <div class="card">
+      <div class="card-head"><h3>Win chance</h3><span id="ctrlPct" class="pct"></span></div>
+      <div class="meter"><div id="meterFill" class="meter-fill"></div><div class="meter-mid"></div></div>
+      <div class="meter-labels"><span class="blue">Blue</span><span class="red">Red</span></div>
+      <p id="ctrlText" class="ctrl-text"></p>
+      <div id="factors" class="factors"></div>
+    </div>
+    <div class="card side-tabs">
+      <div class="mini-tabs" id="sideTabs">
+        <button data-st="moves" class="active">Moves</button>
+        <button data-st="score">Scoreboard</button>
+        <button data-st="chat" title="Ask Claude about your plays, backed by Master+ games">✦ Ask Claude</button>
+      </div>
+      <div id="moves"></div>
+      <div id="scoreboard" class="hidden"></div>
+      <div id="chat" class="chat hidden"></div>
+    </div>
+  </section>
+
+  <section class="card wide">
+    <div class="card-head">
+      <h3>Win chance over time</h3>
+      <div class="legend small">
+        <span><i class="sw blue"></i>Blue</span><span><i class="sw red"></i>Red</span>
+        <span>● kill · ◆ epic monster · ■ tower · ▼ your graded moves</span>
+      </div>
+    </div>
+    <div class="chart-wrap"><canvas id="chart"></canvas><div id="chartTip" class="tip hidden"></div></div>
+  </section>
+
+  <section class="card wide">
+    <div class="tabs" id="tabs">
+      <button data-tab="review" class="active">Game review</button>
+      <button data-tab="phases">Control phases</button>
+      <button data-tab="moments">Turning points</button>
+      <button data-tab="objectives">Objectives</button>
+      <button data-tab="me">My game</button>
+      <button data-tab="how">How it's scored</button>
+    </div>
+    <div id="tabBody" class="tab-body"></div>
+  </section>
+</main>
+
+<script src="wp_model.js"></script>
+<script src="model.js"></script>
+<script src="review.js"></script>
+<script src="app.js"></script>
+<script src="mapview.js"></script>
+<script src="trends.js"></script>
+<script src="live.js"></script>
+<script src="replaystage.js"></script>
+<script src="chat.js"></script>
+<script src="selftest.js"></script>
+</body>
+</html>

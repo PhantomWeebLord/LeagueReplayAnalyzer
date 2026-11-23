@@ -1,0 +1,20 @@
+config.json
+cache/
+live/
+build/
+dist/
+release/
+__pycache__/
+window-v2/
+.env
+.claude/
+*.tmp
+
+# Riot game data is not redistributed
+train/data/
+train/out/
+train/fetch_state.json
+train/fetch.log
+train/fetch_console.txt
+coach/highelo_index.json.gz
+coach/highelo_index.meta.json
