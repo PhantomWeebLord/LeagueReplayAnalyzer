@@ -174,25 +174,46 @@ function wireUi() {
 }
 
 // ================================================================ rofl parsing (for files opened from disk)
-async function parseRoflFile(file) {
-  const buf = new Uint8Array(await file.arrayBuffer());
-  if (String.fromCharCode(...buf.slice(0, 4)) !== 'RIOT') throw new Error('That is not a .rofl replay file.');
-  const pat = new TextEncoder().encode('{"gameLength"');
-  let idx = -1;
-  outer: for (let i = buf.length - pat.length; i >= 0; i--) {
+// same rules as parse_rofl() in lra_core.py
+const lastBytes = (buf, pat, from = buf.length) => {
+  outer: for (let i = Math.min(from, buf.length - pat.length); i >= 0; i--) {
     for (let j = 0; j < pat.length; j++) if (buf[i + j] !== pat[j]) continue outer;
-    idx = i; break;
+    return i;
   }
-  if (idx < 0) throw new Error('Could not find the metadata block in this replay.');
-  const text = new TextDecoder('utf-8').decode(buf.slice(idx));
-  let depth = 0, inStr = false, end = -1;
+  return -1;
+};
+function jsonObjectAt(text) { // the balanced {...} at the start of text, or null
+  let depth = 0, inStr = false;
   for (let i = 0; i < text.length; i++) {
     const c = text[i];
     if (inStr) { if (c === '\\') i++; else if (c === '"') inStr = false; continue; }
-    if (c === '"') inStr = true; else if (c === '{') depth++; else if (c === '}') { depth--; if (!depth) { end = i + 1; break; } }
+    if (c === '"') inStr = true; else if (c === '{') depth++; else if (c === '}') { depth--; if (!depth) return text.slice(0, i + 1); }
   }
-  const meta = JSON.parse(text.slice(0, end));
-  const stats = JSON.parse(meta.statsJson || '[]');
+  return null;
+}
+function roflMetadata(buf) {
+  const enc = new TextEncoder(), dec = new TextDecoder('utf-8');
+  const objectAt = i => { const s = jsonObjectAt(dec.decode(buf.subarray(i))); if (!s) return null; try { return JSON.parse(s); } catch { return null; } };
+  const first = lastBytes(buf, enc.encode('{"gameLength"'));
+  if (first >= 0) { const m = objectAt(first); if (m) return m; throw new Error('This replay file is damaged or incomplete.'); }
+  let i = lastBytes(buf, enc.encode('"statsJson"'));
+  if (i < 0) throw new Error('Could not find the game data in this replay file.');
+  for (let step = 0; step < 32 && i > 0; step++) { // Riot reordered the keys: walk back to the enclosing object
+    i = lastBytes(buf, [123], i - 1);
+    if (i < 0) break;
+    const m = objectAt(i);
+    if (m && 'statsJson' in m) return m;
+  }
+  throw new Error('This replay file is damaged or incomplete.');
+}
+function roflPlayerStats(raw) {
+  try { const s = JSON.parse(raw || '[]'); return Array.isArray(s) ? s.filter(p => p && typeof p === 'object') : []; } catch { return []; }
+}
+async function parseRoflFile(file) {
+  const buf = new Uint8Array(await file.arrayBuffer());
+  if (String.fromCharCode(...buf.slice(0, 4)) !== 'RIOT') throw new Error('That is not a .rofl replay file.');
+  const meta = roflMetadata(buf);
+  const stats = roflPlayerStats(meta.statsJson);
   let m = file.name.match(/([A-Za-z]+\d*)-(\d+)/);
   let matchId = m ? `${m[1].toUpperCase()}_${m[2]}` : null;
   if (!matchId) {
@@ -201,7 +222,7 @@ async function parseRoflFile(file) {
     matchId = v.trim().toUpperCase().replace('-', '_');
   }
   const players = stats.map(p => ({
-    puuid: p.PUUID, name: p.RIOT_ID_GAME_NAME || p.NAME, tag: p.RIOT_ID_TAG_LINE, champion: p.SKIN, team: +p.TEAM,
+    puuid: p.PUUID, name: p.RIOT_ID_GAME_NAME || p.NAME, tag: p.RIOT_ID_TAG_LINE, champion: p.SKIN, team: +p.TEAM || 0,
     position: p.TEAM_POSITION || p.INDIVIDUAL_POSITION, win: p.WIN === 'Win', kills: +p.CHAMPIONS_KILLED || 0,
     deaths: +p.NUM_DEATHS || 0, assists: +p.ASSISTS || 0, gold: +p.GOLD_EARNED || 0, visionScore: +p.VISION_SCORE || 0,
   }));
