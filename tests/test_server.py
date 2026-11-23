@@ -110,11 +110,25 @@ class GuardTests(ServerCase):
     def test_own_origin_allowed(self):
         self.assertEqual(self.req("GET", "/api/ping", headers={"Origin": f"http://127.0.0.1:{self.port}"})[0], 200)
 
-    def test_known_M1_cross_site_get_triggers_refresh(self):
+    def test_cross_site_requests_cannot_reach_the_api(self):
         hits = []
         self.patch(core, "get_match", lambda m, refresh=False: hits.append((m, refresh)) or {"ok": 1})
-        st, _ = self.get("/api/match?id=NA1_1&refresh=1", headers={"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "no-cors"})
-        self.assertEqual((st, hits), (200, [("NA1_1", True)]))
+        for site, mode in (("cross-site", "no-cors"), ("same-site", "no-cors"), ("cross-site", "navigate")):
+            with self.subTest(site=site, mode=mode):
+                st, _, _ = self.req("GET", "/api/match?id=NA1_1&refresh=1", headers={"Sec-Fetch-Site": site, "Sec-Fetch-Mode": mode})
+                self.assertEqual(st, 403)
+        self.assertEqual(hits, [])
+
+    def test_opening_the_app_from_a_link_still_works(self):
+        self.assertEqual(self.req("GET", "/", headers={"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate"})[0], 200)
+
+    def test_cross_site_cannot_load_app_files(self):
+        self.assertEqual(self.req("GET", "/app.js", headers={"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "no-cors"})[0], 403)
+
+    def test_own_page_requests_are_allowed(self):
+        for site in ("same-origin", "none"):
+            with self.subTest(site=site):
+                self.assertEqual(self.req("GET", "/api/ping", headers={"Sec-Fetch-Site": site})[0], 200)
 
     def raw_post(self, headers, body=b""):
         """Runs do_POST on an in-memory request, so what it reads can be checked exactly."""

@@ -88,7 +88,12 @@ class Handler(BaseHTTPRequestHandler):
         if host not in (f"127.0.0.1:{port}", f"localhost:{port}"):
             return False
         origin = (self.headers.get("Origin") or "").lower()
-        return not origin or origin in (f"http://127.0.0.1:{port}", f"http://localhost:{port}")
+        if origin and origin not in (f"http://127.0.0.1:{port}", f"http://localhost:{port}"):
+            return False
+        # A plain <img> or fetch from another site sends no Origin, but browsers do send Sec-Fetch-Site.
+        if (self.headers.get("Sec-Fetch-Site") or "").lower() in ("cross-site", "same-site"):
+            return self.headers.get("Sec-Fetch-Mode") == "navigate" and not self.path.startswith("/api/")
+        return True
 
     def send_json(self, obj, status=200):
         b = json.dumps(obj).encode("utf-8")
