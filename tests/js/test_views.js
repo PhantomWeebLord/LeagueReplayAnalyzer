@@ -1,6 +1,7 @@
 'use strict';
 /* Characterization tests for the map, Trends, Live and replay-stage modules. */
 
+test('self-test output escapes replay data', () => { const html = selfTestLine({ status: 'ISSUES', file: '<img src=x>.rofl', source: '<b>', dur: 60, actions: 1, me: '<i>x', ms: 1, msg: '<s>', bad: ['<u>bad'] }); for (const t of ['<img', '<b>', '<i>', '<s>', '<u>']) ok(!html.includes(t), t); ok(html.includes('&lt;u&gt;bad')); });
 test('fxDur scales with playback speed', () => { const s = S.speed; S.speed = 10; eq(fxDur(1), 10); S.speed = 1; eq(fxDur(1), 1.6); S.speed = s; });
 test('director targets a fight', () => { const g = gameOf('riot-16.23'); const f = g.fights.find(x => x.size > 1); const t = directorTarget(g, f.start + 0.5); eq(t.mode, 'action'); ok(t.z >= 1.35 && t.z <= 2.5); });
 test('director returns to the full map', () => { const g = gameOf('riot-16.23'); const saved = S.focus; S.focus = null; const t = directorTarget(g, 100); eq([t.mode, t.z], ['map', 1]); S.focus = saved; });

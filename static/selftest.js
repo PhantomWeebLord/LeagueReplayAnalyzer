@@ -3,6 +3,12 @@
    pipeline (fetch → model → review → every UI view) and check the output for errors / NaNs / bad positions. */
 /* global S, openReplay, posAt, GRADES, renderTabs, updateSide, drawMap, drawChart, renderMoves, stepMove, fmtTime */
 
+function selfTestLine(r) {
+  const col = r.status === 'ok' ? '#3ecf8e' : r.status === 'ISSUES' ? '#f2b84b' : '#ff6b6b';
+  const issues = r.bad && r.bad.length ? '<br>&nbsp;&nbsp;' + r.bad.map(esc).join('<br>&nbsp;&nbsp;') : '';
+  return `<span style="color:${col}">${esc(r.status.padEnd(6))}</span> ${esc(r.file)} ${esc(r.source || '')} ${r.dur ? fmtTime(r.dur) : ''} · ${r.actions || 0} actions · you: ${esc(r.me || '—')} · ${r.ms}ms${r.msg ? ' · ' + esc(r.msg) : ''}${issues}`;
+}
+
 async function runSelfTest() {
   const out = document.createElement('div');
   out.style.cssText = 'position:fixed;inset:auto 12px 12px auto;width:560px;max-height:60vh;overflow:auto;z-index:50;background:#0b0f17;border:1px solid #253049;border-radius:10px;padding:12px;font:12px/1.4 Consolas,monospace;color:#e6ebf5';
@@ -54,8 +60,7 @@ async function runSelfTest() {
     window.removeEventListener('error', onErr);
     r.ms = Math.round(performance.now() - t0);
     results.push(r);
-    const col = r.status === 'ok' ? '#3ecf8e' : r.status === 'ISSUES' ? '#f2b84b' : '#ff6b6b';
-    log(`<span style="color:${col}">${r.status.padEnd(6)}</span> ${r.file} ${r.source || ''} ${r.dur ? fmtTime(r.dur) : ''} · ${r.actions || 0} actions · you: ${r.me || '—'} · ${r.ms}ms${r.msg ? ' · ' + r.msg : ''}${r.bad && r.bad.length ? '<br>&nbsp;&nbsp;' + r.bad.join('<br>&nbsp;&nbsp;') : ''}`);
+    log(selfTestLine(r));
   }
   const n = s => results.filter(r => r.status === s).length;
   log(`<b>Done: ${n('ok')} ok, ${n('ISSUES')} with issues, ${n('FAIL')} failed.</b>`);
