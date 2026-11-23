@@ -689,6 +689,35 @@ class LockfileTests(SandboxTest):
         self.patch(Path, "exists", lambda _p: (_ for _ in ()).throw(OSError("drive not ready")))
         self.assertIsNone(core.find_lockfile())
 
+    def test_result_is_cached_briefly(self):
+        self.patch(core, "find_lockfile", REAL_FIND_LOCKFILE)
+        self.lockfile()
+        core.save_config({"leagueDir": str(self.tmp)})
+        calls = []
+        self.patch(core, "_lockfile_live", lambda _p: calls.append(1) or True)
+        self.assertEqual(core.find_lockfile(), core.find_lockfile())
+        self.assertEqual(len(calls), 1)
+
+    def test_changing_the_league_folder_is_seen_immediately(self):
+        self.patch(core, "find_lockfile", REAL_FIND_LOCKFILE)
+        self.patch(core, "_lockfile_live", lambda p: p.exists())
+        self.assertIsNone(core.find_lockfile())
+        self.lockfile()
+        core.save_config({"leagueDir": str(self.tmp)})
+        self.assertEqual(core.find_lockfile(), self.tmp / "lockfile")
+
+    def test_finds_a_custom_install_from_riot_metadata(self):
+        self.patch(core, "find_lockfile", REAL_FIND_LOCKFILE)
+        game = self.tmp / "Odd Folder" / "League of Legends"
+        game.mkdir(parents=True)
+        (game / "lockfile").write_text("LeagueClient:1:2:3:https", "utf-8")
+        riot = self.tmp / "Riot Games"
+        riot.mkdir()
+        (riot / "RiotClientInstalls.json").write_text(json.dumps({"associated_client": {str(game): "x"}}), "utf-8")
+        self.patch(os, "environ", {**os.environ, "ProgramData": str(self.tmp)})
+        self.patch(core, "_lockfile_live", lambda p: p.exists())
+        self.assertEqual(core.find_lockfile(), game / "lockfile")
+
     def test_lockfile_live_rules(self):
         lf = self.lockfile()
         for image, want in ((r"C:\Riot\LeagueClient.exe", True), (r"C:\Riot\LeagueClientUx.exe", True), ("", True), (r"C:\x\notepad.exe", False), (None, False)):

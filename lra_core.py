@@ -568,20 +568,40 @@ def _configured_league_dir():
     return Path(d) if d else None
 
 
+def _riot_install_dirs() -> list:
+    """League folders from the Riot Client's own install list (finds installs outside the usual paths)."""
+    try:
+        inst = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "Riot Games" / "RiotClientInstalls.json"
+        return [Path(k) for k in (json.loads(inst.read_text("utf-8")).get("associated_client") or {}) if "League of Legends" in k]
+    except (OSError, ValueError, AttributeError):
+        return []
+
+
+LOCKFILE_CACHE_SECONDS = 2      # every poll asks for this; probing several drives each time can stall on a sleeping disk
+_lockfile_cache = {"at": 0.0, "dir": None, "path": None}
+
+
 def find_lockfile():
     cfg_dir = _configured_league_dir()
+    now = time.time()
+    if now - _lockfile_cache["at"] < LOCKFILE_CACHE_SECONDS and _lockfile_cache["dir"] == cfg_dir:
+        return _lockfile_cache["path"]
     cands = [cfg_dir / "lockfile"] if cfg_dir else []
+    cands += [d / "lockfile" for d in _riot_install_dirs()]
     for drive in "CDEFGH":
         cands += [Path(f"{drive}:/Riot Games/League of Legends/lockfile"),
                   Path(f"{drive}:/Program Files/Riot Games/League of Legends/lockfile"),
                   Path(f"{drive}:/Games/Riot Games/League of Legends/lockfile")]
-    for c in cands:
+    found = None
+    for c in dict.fromkeys(cands):
         try:
             if c.exists() and _lockfile_live(c):
-                return c
+                found = c
+                break
         except OSError:
             continue
-    return None
+    _lockfile_cache.update(at=now, dir=cfg_dir, path=found)
+    return found
 
 
 def _pid_image(pid):
@@ -926,11 +946,7 @@ def league_install_dirs():
     lf = find_lockfile()
     if lf:
         out.append(lf.parent)
-    try:
-        inst = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "Riot Games" / "RiotClientInstalls.json"
-        out += [Path(k) for k in (json.loads(inst.read_text("utf-8")).get("associated_client") or {}) if "League of Legends" in k]
-    except Exception:
-        pass
+    out += _riot_install_dirs()
     out += [Path(f"{d}:/Riot Games/League of Legends") for d in "CDEF"]
     return [d for d in dict.fromkeys(out) if (d / "Game" / "League of Legends.exe").is_file()]
 
