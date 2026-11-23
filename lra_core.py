@@ -732,20 +732,27 @@ def lcu_platform():
 
 # ---------------------------------------------------------------- assets (cached Data Dragon)
 _dd_version = None
+_dd_retry_at = 0
+DDRAGON_RETRY_SECONDS = 300
 
 
-def ddragon_version():
-    global _dd_version
-    if _dd_version:
+def ddragon_version() -> str:
+    """The latest Data Dragon version. After a failed lookup the saved one is used, and checked again in a few minutes."""
+    global _dd_version, _dd_retry_at
+    if _dd_version and (not _dd_retry_at or time.time() < _dd_retry_at):
         return _dd_version
     vf = CACHE / "ddragon_version.txt"
     try:
         with urllib.request.urlopen(f"{DDRAGON_BASE}/api/versions.json", timeout=DDRAGON_VERSIONS_TIMEOUT) as r:
-            _dd_version = json.loads(r.read())[0]
-            CACHE.mkdir(exist_ok=True)
-            vf.write_text(_dd_version)
+            latest = json.loads(r.read())[0]
+        if not isinstance(latest, str):
+            raise ValueError("unexpected version list")
+        CACHE.mkdir(exist_ok=True)
+        write_atomic(vf, latest)
+        _dd_version, _dd_retry_at = latest, 0
     except Exception:
         _dd_version = vf.read_text().strip() if vf.exists() else DDRAGON_FALLBACK_VERSION
+        _dd_retry_at = time.time() + DDRAGON_RETRY_SECONDS
     return _dd_version
 
 

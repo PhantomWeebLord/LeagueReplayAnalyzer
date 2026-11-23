@@ -43,7 +43,7 @@ class Sandbox:
         for attr, value in (("DATA", self.dir), ("CACHE", self.dir / "cache"), ("CONFIG_FILE", self.dir / "config.json"), ("LIVE_DIR", self.dir / "live"),
                             ("DEFAULT_REPLAY_DIR", self.dir / "replays"), ("_champ_table", None), ("_dd_version", None), ("rejected_keys", set()),
                             ("_meta_cache", {}), ("_cv", {"v": None, "at": 0.0}), ("_ip", {"v": None, "at": 0.0}), ("_user32", lambda: None),
-                            ("find_lockfile", lambda: None), ("league_install_dirs", lambda: []), ("_last_config", {}), ("RIOT_LIMITER", core.RateLimiter([(100000, 1.0)]))):
+                            ("find_lockfile", lambda: None), ("league_install_dirs", lambda: []), ("_last_config", {}), ("_dd_retry_at", 0), ("RIOT_LIMITER", core.RateLimiter([(100000, 1.0)]))):
             self.patch(core, attr, value)
         self.patch(urllib.request, "urlopen", _blocked_network)
         self.patch(subprocess, "run", _blocked_process)

@@ -836,9 +836,16 @@ class ChampionDataTests(SandboxTest):
         (core.CACHE / "ddragon_version.txt").write_text("16.20.1")
         self.assertEqual(core.ddragon_version(), "16.20.1")
 
-    def test_known_M7_offline_start_pins_hardcoded_version(self):
+    def test_offline_start_recovers_when_back_online(self):
         self.assertEqual(core.ddragon_version(), "15.1.1")
         self.net("16.24.1")
+        self.assertEqual(core.ddragon_version(), "15.1.1")   # not re-checked on every request
+        core._dd_retry_at = time.time() - 1
+        self.assertEqual(core.ddragon_version(), "16.24.1")
+        self.assertEqual(core._dd_retry_at, 0)
+
+    def test_unexpected_version_list_is_ignored(self):
+        self.patch(urllib.request, "urlopen", lambda *_a, **_k: Resp("[1, 2]"))
         self.assertEqual(core.ddragon_version(), "15.1.1")
 
 
