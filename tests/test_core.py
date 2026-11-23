@@ -467,15 +467,28 @@ class GetMatchTests(SandboxTest):
         core.get_match("NA1_1")
         self.assertEqual(self.api_calls, [])
 
-    def test_known_H4_fresh_404_is_marked_permanently_missing(self):
+    def test_fresh_404_is_checked_again_later(self):
         core.save_config({"apiKey": "k"})
+        self.game["match"]["info"]["gameCreation"] = int(time.time() * 1000) - 60000
         self.api_error = core.RiotError(404, "not published yet")
         core.get_match("NA1_1")
-        self.assertIs(self.stored("NA1_1")["apiMissing"], True)
-        self.api_error = None
+        saved = self.stored("NA1_1")
+        self.assertIs(saved["apiMissing"], False)
+        self.assertGreater(saved["apiRetryAt"], time.time())
         n = len(self.api_calls)
-        self.assertEqual(core.get_match("NA1_1")["source"], "lcu")
+        core.get_match("NA1_1")
         self.assertEqual(len(self.api_calls), n)
+        saved["apiRetryAt"] = time.time() - 1
+        (core.CACHE / "NA1_1.json").write_text(json.dumps(saved), "utf-8")
+        self.api_error = None
+        self.assertEqual(core.get_match("NA1_1")["source"], "riot-api")
+
+    def test_old_game_404_is_final(self):
+        core.save_config({"apiKey": "k"})
+        self.game["match"]["info"]["gameCreation"] = int((time.time() - 3 * 86400) * 1000)
+        self.api_error = core.RiotError(404, "custom game")
+        core.get_match("NA1_1")
+        self.assertIs(self.stored("NA1_1")["apiMissing"], True)
 
     def test_404_on_cached_client_game_sets_missing(self):
         core.save_config({"apiKey": "k"})

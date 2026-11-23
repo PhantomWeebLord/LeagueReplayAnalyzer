@@ -436,7 +436,17 @@ def _fetch_riot_match(region: str, match_id: str, key: str, resume: bool = True)
     return {"source": "riot-api", "match": match, "timeline": timeline}
 
 
+API_PUBLISH_WINDOW = 24 * 3600   # a 404 for a game newer than this may just mean Riot hasn't published it yet
+API_RECHECK_SECONDS = 600
 _match_locks = {}
+
+
+def _note_missing_on_api(data: dict):
+    created = (data.get("match", {}).get("info") or {}).get("gameCreation")
+    if created and time.time() - created / 1000 < API_PUBLISH_WINDOW:
+        data["apiRetryAt"] = time.time() + API_RECHECK_SECONDS
+    else:
+        data["apiMissing"] = True
 
 
 def get_match(match_id: str, refresh: bool = False) -> dict:
@@ -455,7 +465,7 @@ def _load_match(match_id: str, refresh: bool) -> dict:
     cached = _read_cached_match(cf)
     if cached:
         # an API key gives richer data (wards, items, levels) than the client; upgrade client-sourced caches
-        upgradable = cached.get("source") == "lcu" and key and not cached.get("apiMissing")
+        upgradable = cached.get("source") == "lcu" and key and not cached.get("apiMissing") and time.time() >= cached.get("apiRetryAt", 0)
         if not refresh and not upgradable:
             return cached
     platform = match_id.split("_")[0].upper()
@@ -480,12 +490,14 @@ def _load_match(match_id: str, refresh: bool) -> dict:
     # never replace richer Riot API data with the client's, and don't re-download a usable copy just because the API failed
     if cached and (cached.get("source") == "riot-api" or not refresh):
         if api_missing and cached.get("source") == "lcu" and not cached.get("apiMissing"):
-            cached["apiMissing"] = True
+            _note_missing_on_api(cached)
             write_atomic(cf, json.dumps(cached))
         return cached
     try:
         data = lcu_match(match_id)
-        data["apiMissing"] = api_missing
+        data["apiMissing"] = False
+        if api_missing:
+            _note_missing_on_api(data)
         write_atomic(cf, json.dumps(data))
         return data
     except RiotError as e:
