@@ -157,10 +157,12 @@ class GuardTests(ServerCase):
         self.assertEqual(c.getresponse().status, 400)
         c.close()
 
-    def test_known_M2_bad_json_returns_500_with_internal_text(self):
-        st, d, _ = self.req("POST", "/api/config", body="{bad", headers={"Content-Type": "application/json"})
-        self.assertEqual(st, 500)
-        self.assertIn(b"JSONDecodeError", d)
+    def test_bad_json_is_a_400_without_internal_text(self):
+        for body in ("{bad", "[1, 2]", '"text"'):
+            with self.subTest(body=body):
+                st, d, _ = self.req("POST", "/api/config", body=body, headers={"Content-Type": "application/json"})
+                self.assertEqual(st, 400)
+                self.assertNotIn(b"Error", d)
 
     def test_unknown_post(self):
         self.assertEqual(self.post("/api/nope")[0], 404)
@@ -263,8 +265,32 @@ class ApiTests(ServerCase):
 
     def test_unexpected_exception_is_500(self):
         self.patch(core, "list_replays", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
-        st, d = self.get("/api/replays")
-        self.assertEqual((st, d["error"]), (500, "RuntimeError: boom"))
+        with contextlib.redirect_stderr(io.StringIO()) as log:
+            st, d = self.get("/api/replays")
+        self.assertEqual(st, 500)
+        self.assertNotIn("boom", d["error"])
+        self.assertNotIn("RuntimeError", d["error"])
+        self.assertIn("boom", log.getvalue())
+
+    def test_unexpected_post_exception_hides_details(self):
+        self.patch(core, "save_config", lambda _c: (_ for _ in ()).throw(RuntimeError(r"C:\\Users\\secret\\path")))
+        with contextlib.redirect_stderr(io.StringIO()):
+            st, d = self.post("/api/config", {"replayDir": "x"})
+        self.assertEqual(st, 500)
+        self.assertNotIn("secret", d["error"])
+
+    def test_disconnected_client_is_not_an_app_error(self):
+        h = s.Handler.__new__(s.Handler)
+        h.headers = {"Host": f"127.0.0.1:{self.port}"}
+        h.path, h.command, h.request_version, h.requestline = "/api/ping", "GET", "HTTP/1.1", "GET /api/ping HTTP/1.1"
+        h.client_address, h.close_connection, h.rfile = ("127.0.0.1", 0), True, io.BytesIO()
+        class Gone:
+            def write(self, _b):
+                raise ConnectionAbortedError("client left")
+            def flush(self):
+                pass
+        h.wfile = Gone()
+        h.do_GET()
 
     def test_replay_file(self):
         p = self.tmp / "NA1-9.rofl"
@@ -285,6 +311,7 @@ class ApiTests(ServerCase):
         st, d = self.get("/api/replay-file?path=" + urllib.parse.quote(str(p)))
         self.assertEqual(st, 200)
         self.assertIn("Could not read this replay", d["error"])
+        self.assertNotIn("Traceback", d["error"])
 
     def test_live_routes_disabled(self):
         self.assertEqual(self.get("/api/live/state")[1], {"status": "disabled"})

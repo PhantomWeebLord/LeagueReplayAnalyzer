@@ -14,6 +14,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import urllib.parse
 import urllib.request
 import webbrowser
@@ -105,6 +106,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "max-age=86400" if cache else "no-cache")
         self.end_headers()
         self.wfile.write(b)
+
+    def _internal_error(self):
+        """The details go to the log (app.log in the packaged app), never to the page."""
+        traceback.print_exc()
+        return self.send_json({"error": "Something went wrong in the app. Details are in its log."}, 500)
 
     def send_empty(self, status):
         self.send_response(status)
@@ -230,8 +236,11 @@ class Handler(BaseHTTPRequestHandler):
             if u.path.startswith("/asset/"):
                 return self._get_asset(u.path)
             return self._get_static(u.path)
-        except Exception as e:
-            return self.send_json({"error": f"{type(e).__name__}: {e}"}, 500)
+        except ConnectionError:  # the page went away mid-response
+            self.close_connection = True
+            return None
+        except Exception:
+            return self._internal_error()
 
     # ------------------------------------------------ POST routes
     def _post_config(self, data):
@@ -324,10 +333,18 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"error": "JSON body required"}, 415)
         try:
             data = json.loads(body or b"{}")
+        except ValueError:
+            return self.send_json({"error": "Invalid JSON"}, 400)
+        if not isinstance(data, dict):
+            return self.send_json({"error": "Invalid JSON"}, 400)
+        try:
             route = self.POST_ROUTES.get(u.path)
             return route(self, data) if route else self.send_json({"error": "not found"}, 404)
-        except Exception as e:
-            return self.send_json({"error": f"{type(e).__name__}: {e}"}, 500)
+        except ConnectionError:  # the page went away mid-response
+            self.close_connection = True
+            return None
+        except Exception:
+            return self._internal_error()
 
 
 # ---------------------------------------------------------------- v2: replay status for the in-app replay view
