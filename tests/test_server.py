@@ -116,6 +116,35 @@ class GuardTests(ServerCase):
         st, _ = self.get("/api/match?id=NA1_1&refresh=1", headers={"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "no-cors"})
         self.assertEqual((st, hits), (200, [("NA1_1", True)]))
 
+    def raw_post(self, headers, body=b""):
+        """Runs do_POST on an in-memory request, so what it reads can be checked exactly."""
+        h = s.Handler.__new__(s.Handler)
+        h.headers, h.rfile, h.wfile = headers, io.BytesIO(body), io.BytesIO()
+        h.path, h.command, h.request_version, h.requestline = "/api/config", "POST", "HTTP/1.1", "POST /api/config HTTP/1.1"
+        h.client_address, h.close_connection = ("127.0.0.1", 0), True
+        h.do_POST()
+        return h, int(h.wfile.getvalue().split(b" ", 2)[1])
+
+    def test_rejected_post_reads_its_body_first(self):
+        # closing with unread data makes Windows reset the socket, and the client can lose the 403
+        h, st = self.raw_post({"Host": f"127.0.0.1:{self.port}", "Origin": "https://evil.example", "Content-Length": "10"}, b"x" * 10)
+        self.assertEqual((st, h.rfile.tell()), (403, 10))
+
+    def test_oversized_post_is_refused_unread(self):
+        h, st = self.raw_post({"Host": f"127.0.0.1:{self.port}", "Content-Type": "application/json", "Content-Length": str(s.MAX_BODY_BYTES + 1)}, b"x")
+        self.assertEqual((st, h.rfile.tell()), (413, 0))
+
+    def test_negative_content_length_is_empty(self):
+        _, st = self.raw_post({"Host": f"127.0.0.1:{self.port}", "Content-Type": "application/json", "Content-Length": "-5"})
+        self.assertEqual(st, 200)
+
+    def test_bad_length_from_foreign_origin_is_403(self):
+        _, st = self.raw_post({"Host": f"127.0.0.1:{self.port}", "Origin": "https://evil.example", "Content-Length": "nope"})
+        self.assertEqual(st, 403)
+
+    def test_slow_clients_time_out(self):
+        self.assertGreater(s.Handler.timeout, 0)
+
     def test_post_requires_json(self):
         self.assertEqual(self.req("POST", "/api/config", body="{}", headers={"Content-Type": "text/plain"})[0], 415)
         self.assertEqual(self.req("POST", "/api/config", body="{}")[0], 415)

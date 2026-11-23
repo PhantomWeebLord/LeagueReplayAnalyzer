@@ -39,6 +39,8 @@ MATCH_ID = re.compile(r"[A-Z]+\d*_\d+")
 MIN_REPLAY_SPEED, MAX_REPLAY_SPEED = 0.125, 16.0
 SAFE_CAMERA_MODES = (None, "top")    # third-person / free-fly modes crashed League's replay player in testing
 LISTEN_BACKLOG = 128
+MAX_BODY_BYTES = 1 << 20             # the app's own requests are a few hundred bytes
+REQUEST_TIMEOUT = 30                 # seconds a client may stall on the socket
 PORT_SEARCH_RANGE = 10
 STATUS_CACHE_SECONDS = 2.5
 CLOSE_POLLS, CLOSE_POLL_SECONDS = 12, 0.25
@@ -73,6 +75,7 @@ def parse_args(argv):
 # ---------------------------------------------------------------- HTTP
 class Handler(BaseHTTPRequestHandler):
     server_version = "ReplayAnalyzer/" + VERSION
+    timeout = REQUEST_TIMEOUT
 
     def log_message(self, fmt, *args):
         pass
@@ -301,14 +304,19 @@ class Handler(BaseHTTPRequestHandler):
     }
 
     def do_POST(self):
-        if not self._local_ok():
-            return self.send_json({"error": "forbidden"}, 403)
+        allowed = self._local_ok()
         u = urllib.parse.urlparse(self.path)
         try:
             n = max(0, int(self.headers.get("Content-Length") or 0))
         except ValueError:
-            return self.send_json({"error": "Bad Content-Length"}, 400)
+            return self.send_json({"error": "forbidden"}, 403) if not allowed else self.send_json({"error": "Bad Content-Length"}, 400)
+        if n > MAX_BODY_BYTES:
+            self.close_connection = True
+            return self.send_json({"error": "forbidden"}, 403) if not allowed else self.send_json({"error": "Request too large"}, 413)
+        # read before answering: closing with unread data makes Windows reset the socket, and the client can lose the reply
         body = self.rfile.read(n) if n else b""
+        if not allowed:
+            return self.send_json({"error": "forbidden"}, 403)
         if u.path == "/api/bye":  # page closed (sendBeacon) - lets the app exit when its window is gone
             BYE_AT[0] = time.time()
             return self.send_empty(204)

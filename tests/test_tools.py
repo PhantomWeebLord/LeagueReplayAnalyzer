@@ -2,6 +2,7 @@
 import gzip
 import http.client
 import importlib.util
+import io
 import json
 import os
 import struct
@@ -466,3 +467,11 @@ class TrainServerTests(SandboxTest):
 
     def test_unknown_get(self):
         self.assertEqual(self.req("GET", "/nope")[0], 404)
+
+    def test_rejected_post_reads_its_body_first(self):
+        h = ts.H.__new__(ts.H)
+        h.headers, h.rfile, h.wfile = {"Host": "evil.example", "Content-Length": "10"}, io.BytesIO(b"x" * 10), io.BytesIO()
+        h.path, h.command, h.request_version, h.requestline = "/api/save?name=x", "POST", "HTTP/1.1", "POST"
+        h.client_address, h.close_connection = ("127.0.0.1", 0), True
+        h.do_POST()
+        self.assertEqual(h.rfile.tell(), 10)

@@ -19,6 +19,7 @@ DATA = HERE / "data"
 OUT = HERE / "out"
 CACHE = ROOT / "cache"
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8771
+MAX_SAVE_BYTES = 64 << 20
 ID_RE = re.compile(r"^[A-Z0-9]{2,5}_\d{6,14}$")
 NAME_RE = re.compile(r"^[\w.-]{1,80}$")
 TYPES = {".js": "text/javascript", ".html": "text/html", ".css": "text/css", ".json": "application/json", ".png": "image/png"}
@@ -92,14 +93,20 @@ class H(BaseHTTPRequestHandler):
         self.send(404, '{"error":"not found"}')
 
     def do_POST(self):
+        try:
+            n = max(0, int(self.headers.get("Content-Length") or 0))
+        except ValueError:
+            return self.send(400, '{"error":"bad length"}')
+        if n > MAX_SAVE_BYTES:
+            self.close_connection = True
+            return self.send(413, '{"error":"too large"}')
+        body = self.rfile.read(n)  # read before answering, or Windows resets the socket and the reply can be lost
         if not self._local():
             return self.send(403, '{"error":"forbidden"}')
         u = urlparse(self.path)
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
         if u.path != "/api/save" or not NAME_RE.match(q.get("name", "")):
             return self.send(404, '{"error":"not found"}')
-        n = int(self.headers.get("Content-Length") or 0)
-        body = self.rfile.read(n)
         name = q["name"]
         dest = STATIC / "wp_model.js" if name == "wp_model.js" else OUT / name
         dest.parent.mkdir(parents=True, exist_ok=True)
