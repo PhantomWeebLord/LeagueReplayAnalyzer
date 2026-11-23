@@ -18,6 +18,7 @@ from tests.sandbox import SandboxTest, core
 REAL_FIND_LOCKFILE = core.find_lockfile
 REAL_INSTALL_DIRS = core.league_install_dirs
 REAL_USER32 = core._user32
+real_riot_get = core.riot_get
 
 
 class Resp:
@@ -505,6 +506,18 @@ class GetMatchTests(SandboxTest):
         n = len(self.api_calls)
         core.get_match("NA1_2")
         self.assertEqual(len(self.api_calls), n)
+
+    def test_firewall_block_does_not_reject_the_key(self):
+        core.save_config({"apiKey": "k"})
+        self.patch(core, "riot_get", real_riot_get)
+        calls = []
+        def blocked(req, **_k):
+            calls.append(1)
+            raise http_error(req.full_url, 403, b"error code: 1010")
+        self.patch(urllib.request, "urlopen", blocked)
+        core.get_match("NA1_1")
+        self.assertNotIn("k", core.rejected_keys)
+        self.assertEqual(len(calls), 1)
 
     def test_401_also_rejects_key(self):
         core.save_config({"apiKey": "k"})

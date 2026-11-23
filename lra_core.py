@@ -288,6 +288,7 @@ RIOT_MAX_ATTEMPTS = 4
 RIOT_BACKOFF_SECONDS = 1.0
 RIOT_MAX_WAIT_SECONDS = 20      # longer than this, fall back to the League client rather than freeze the page
 RIOT_RETRY_STATUSES = {429, 500, 502, 503, 504}
+RIOT_FIREWALL_BLOCK = 520       # our own status: not retried, and the key stays valid
 
 
 class RateLimiter:
@@ -359,6 +360,8 @@ def _riot_request(url: str, key: str):
             return json.loads(r.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", "replace")[:300]
+        if e.code == 403 and body.startswith("error code:"):   # Riot's firewall, not a verdict on the API key
+            raise RiotError(RIOT_FIREWALL_BLOCK, "Riot's firewall blocked this request. Try again later.")
         raise RiotError(e.code, RIOT_ERROR_HINTS.get(e.code, body), _retry_after(e.headers))
     except urllib.error.URLError as e:
         raise RiotError(502, f"Could not reach Riot API: {e.reason}")
