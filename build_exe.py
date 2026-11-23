@@ -128,9 +128,6 @@ def main():
     cmd = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onefile", "--noconsole",
            "--name", NAME, "--icon", str(ico),
            "--add-data", f"{ROOT / 'static'}{os.pathsep}static",
-           *[x for f in ("highelo_index.json.gz", "highelo_index.meta.json") if (ROOT / "coach" / f).is_file()  # Master+ games for the chat
-             for x in ("--add-data", f"{ROOT / 'coach' / f}{os.pathsep}coach")],
-           "--hidden-import", "anthropic", "--collect-submodules", "anthropic", "--collect-data", "certifi",
            "--distpath", str(ROOT / "dist"), "--workpath", str(BUILD / "pyi"), "--specpath", str(BUILD),
            str(ROOT / "server.py")]
     print(" ".join(f'"{c}"' if " " in c else c for c in cmd))

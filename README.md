@@ -11,14 +11,6 @@ Open a League of Legends replay (`.rofl`) and get a chess.com-style **Game Revie
 - **Limit:** League only plays replays from its **current patch**. Older replays automatically use the recreated map (it's still one click away as *Recreated map*).
 - One-time setup (one button in the app): replay control adds `EnableReplayApi=1` to League's `game.cfg` (a backup is kept).
 
-**Ask Claude (v2):** a chat tab next to *Moves*. Select a move (or click *✦ Ask Claude* on it) and ask whether it was right and what to do instead. Each question goes to Claude (`claude-opus-5-5`) with a snapshot of the game: the selected move and its grade, gold/XP/kills/objectives at that moment, who was alive, and the events around it. Claude checks its answer with tools over a local index of NA Master+ solo-queue games that you build yourself (`coach/highelo_index.json.gz`, see [Data and privacy](#data-and-privacy)):
-- `similar_situations`: games where a team was in the same spot (minute, gold lead, dragons, towers), how they ended, and what high-elo teams did next.
-- `objective_value`: what dragon/grubs/herald/baron/towers were worth (win rate vs what the gold lead alone predicts), and what got traded.
-- `after_fight`: what teams converted fights into (and how that went).
-- `jungle_patterns` and `champion_benchmarks`: where Master+ junglers are by minute, and gold/CS/level benchmarks per champion.
-
-It uses your own Anthropic API key (console.anthropic.com; billed per use, separate from a Claude.ai subscription; the cost of each answer is shown). The key is saved in the app's `config.json` (or set `ANTHROPIC_API_KEY`). Rebuild the index after downloading new games: `python train/build_coach_index.py`. Chat effort can be set with `"chatEffort"` in `config.json` (default `high`).
-
 - **Every action graded** as **Brilliant !! · Great ! · Good ✓ · OK • · Inaccuracy ?! · Miss ✗ · Mistake ? · Blunder ??**, by how much it changed your team's win chance compared with the same kind of action in Master+ games. Each grade comes with an explanation and what would have been better. Grades roll up into an **accuracy %** per player, team and game phase.
 - **Win chance**: an eval bar and chart from a model trained on thousands of high-elo ranked games, with a breakdown of what's driving it (gold, objectives, numbers, map, vision, XP).
 - **Cinematic map** of all 10 players: movement follows real routes (lanes, river, jungle paths) instead of straight lines. It adds glowing trails, kill and objective effects, broadcast-style captions, a kill feed, and a **Director cam** that zooms onto fights and objectives (with slow motion).
@@ -28,18 +20,13 @@ It uses your own Anthropic API key (console.anthropic.com; billed per use, separ
 
 ## Run it
 
-On Windows with Python 3.9+:
+**[Download ReplayAnalyzer.exe](https://github.com/PhantomWeebLord/LeagueReplayAnalyzer/releases/latest/download/ReplayAnalyzer.exe)** for Windows 10 or 11 (64-bit), then double-click it. There's nothing to install. To analyse a game, pick it from the list, use *Open .rofl…*, or drag a `.rofl` file onto the window.
 
-```powershell
-python -m pip install -r requirements.txt
-python server.py
-```
+> The exe isn't code-signed, so Windows SmartScreen may warn the first time (*More info*, then *Run anyway*). Each release is built from this source by [GitHub Actions](.github/workflows/release.yml) and lists its SHA-256 checksum.
 
-Or double-click `start.bat`. The app opens in its own window. To analyse a game, pick it from the list, use *Open .rofl…*, or drag a `.rofl` file onto the window. The only extra package is `anthropic`, used by the chat.
+**From source** (Python 3.9+, no extra packages): `python server.py`, or double-click `start.bat`.
 
 **Build a single exe:** run `python -m pip install pyinstaller`, then `python build_exe.py`. The result is `dist\Replay Analyzer v2.exe`. You can copy it anywhere; it keeps its data in `%LOCALAPPDATA%\League Replay Analyzer` (put an empty `portable.txt` next to the exe to keep data beside it instead). It closes itself about 30 seconds after you close its window, but never while it's recording one of your games.
-
-> The exe isn't code-signed, so Windows SmartScreen may warn the first time ("More info → Run anyway").
 
 
 ## Where the data comes from
@@ -89,7 +76,7 @@ Custom games have no ward data, so they use a second version of the model traine
 - **No information on HP, cooldowns, item spikes or ward locations** (except your own HP and gold when recorded live).
 - **High-elo standard.** Grades compare you with how Master+ games usually go, which is a high bar on purpose.
 
-To retrain (for example on a new patch): put your own Riot API key in the app, run `python train/fetch_highelo.py`, then `python train/train_server.py` and click *Run everything* at <http://127.0.0.1:8771/>. That rewrites `static/wp_model.js`. Run `python train/build_coach_index.py` to refresh the chat's index, then rebuild the exe.
+To retrain (for example on a new patch): put your own Riot API key in the app, run `python train/fetch_highelo.py`, then `python train/train_server.py` and click *Run everything* at <http://127.0.0.1:8771/>. That rewrites `static/wp_model.js`. Rebuild the exe afterwards.
 
 ## Self-test
 
@@ -100,7 +87,6 @@ Add `?selftest` to the app's address to run every replay in your folder through 
 - `server.py`: app server: HTTP, app window, single-instance, auto-exit, local-only request checks
 - `lra_core.py`: replays, Riot API, League client, Data Dragon assets, game config
 - `lra_live.py`: live game recorder (Live Client Data API)
-- `lra_coach.py`: Ask Claude: chat loop (Anthropic SDK, streaming, tools) and the Master+ lookups · `static/chat.js`: the chat tab · `train/build_coach_index.py`: builds `coach/highelo_index.json.gz`
 - `static/model.js`: movement (routed paths), territory, win-chance features, fights, phases, live enrichment
 - `static/wp_model.js`: the trained win-chance model, grade calibration and Master+ role benchmarks (generated)
 - `static/review.js`: action grading, accuracy, coach's notes, game story
@@ -114,12 +100,7 @@ Add `?selftest` to the app's address to run every replay in your folder through 
 
 - This repository contains **no API keys, replays, player names or downloaded match data**. Your keys and games stay on your PC in git-ignored files.
 - `static/wp_model.js` holds only model weights and aggregate statistics.
-- **The chat's Master+ index is not included**, because Riot's API terms restrict redistributing game data. Everything else works without it. To enable *Ask Claude*, add your own Riot key in the app, then run:
-
-```powershell
-python train/fetch_highelo.py --target 2000
-python train/build_coach_index.py
-```
+- The Master+ games used for training are not included, because Riot's API terms restrict redistributing game data. To retrain, `train/fetch_highelo.py` downloads your own copy with your own Riot key.
 
 ## Riot API use
 

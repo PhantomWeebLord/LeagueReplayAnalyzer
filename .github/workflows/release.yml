@@ -1,0 +1,57 @@
+# Builds the Windows exe from this repository's source and publishes it as a GitHub release.
+# To release: git tag v2.0.1 && git push origin v2.0.1
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  windows-exe:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Install PyInstaller
+        run: python -m pip install pyinstaller==6.22.3
+
+      - name: Build the exe
+        run: python build_exe.py
+
+      - name: Check that the exe starts and serves the app
+        shell: pwsh
+        run: |
+          $exe = "dist\Replay Analyzer v2.exe"
+          Start-Process -FilePath $exe -ArgumentList "--no-browser", "--port", "8790", "--no-auto-exit"
+          $ok = $false
+          foreach ($i in 1..60) {
+            try {
+              $page = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:8790/" -TimeoutSec 2
+              $model = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:8790/wp_model.js" -TimeoutSec 5
+              if ($page.StatusCode -eq 200 -and $model.StatusCode -eq 200) { $ok = $true; break }
+            } catch { }
+            Start-Sleep -Seconds 1
+          }
+          Get-Process -Name "Replay Analyzer v2" -ErrorAction SilentlyContinue | Stop-Process -Force
+          if (-not $ok) { throw "The exe did not start." }
+
+      - name: Publish the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          Copy-Item "dist\Replay Analyzer v2.exe" "ReplayAnalyzer.exe"
+          $sha = (Get-FileHash "ReplayAnalyzer.exe" -Algorithm SHA256).Hash.ToLower()
+          "$sha  ReplayAnalyzer.exe" | Out-File -FilePath "ReplayAnalyzer.exe.sha256" -Encoding ascii
+          $notes = (Get-Content ".github\release-notes.md" -Raw) + "`n**SHA-256:** ``$sha```n"
+          Set-Content -Path "notes.md" -Value $notes -Encoding utf8
+          gh release create "$env:GITHUB_REF_NAME" "ReplayAnalyzer.exe" "ReplayAnalyzer.exe.sha256" --verify-tag --title "Replay Analyzer $env:GITHUB_REF_NAME" --notes-file "notes.md"
+          if ($LASTEXITCODE -ne 0) { throw "Publishing failed." }

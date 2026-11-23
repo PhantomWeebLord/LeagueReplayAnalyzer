@@ -149,8 +149,6 @@ function wireUi() {
     const b = e.target.closest('button'); if (!b) return; S.sideTab = b.dataset.st;
     for (const x of $('sideTabs').querySelectorAll('button')) x.classList.toggle('active', x === b);
     $('moves').classList.toggle('hidden', S.sideTab !== 'moves'); $('scoreboard').classList.toggle('hidden', S.sideTab !== 'score');
-    $('chat').classList.toggle('hidden', S.sideTab !== 'chat');
-    if (S.sideTab === 'chat' && typeof chatShown === 'function') chatShown();
     S.lastUi = 0;
   };
   document.addEventListener('keydown', e => {
@@ -250,7 +248,6 @@ async function openReplay(meta, refresh) {
   S.heatT = -1;
   $('watchLeague').classList.add('hidden'); // v2: the replay view opens League itself
   if (typeof rsOnGameOpened === 'function') rsOnGameOpened();
-  if (typeof chatOnGameOpened === 'function') chatOnGameOpened();
   sizeCanvases();
   S.t = 0; S.lastUi = 0;
   drawChart();
@@ -813,14 +810,13 @@ function renderMoves() {
           <p><b style="color:${GRADES[a.grade].color}">${GRADES[a.grade].label}.</b> ${esc(a.detail)}</p>
           ${a.better ? `<p class="better"><b>Better:</b> ${esc(a.better)}</p>` : ''}
           ${a.tags && a.tags.length ? `<div class="chips">${a.tags.map(t => chip(t)).join('')}</div>` : ''}
-          <button class="btn" data-watch="${a.id}">▶ Watch this moment</button> <button class="btn ghost" data-ask="${a.id}" title="Ask Claude about this play, backed by Master+ games">✦ Ask Claude</button>${LV.playbackOk && !(typeof rsControl === 'function' && rsControl()) ? ` <button class="btn ghost" data-jump="${a.t}">⏩ Jump League replay here</button>` : ''}</div>` : '';
+          <button class="btn" data-watch="${a.id}">▶ Watch this moment</button>${LV.playbackOk && !(typeof rsControl === 'function' && rsControl()) ? ` <button class="btn ghost" data-jump="${a.t}">⏩ Jump League replay here</button>` : ''}</div>` : '';
       return `<div class="rv-move ${sel ? 'sel' : ''}" data-act="${a.id}"><span class="t">${fmtTime(a.t)}</span>${badge(a.grade)}<span class="ttl">${esc(a.title)}</span>${evalTxt(a)}</div>${detail}`;
     }).join('') || '<p class="muted small">No moves match this filter.</p>'}</div>`;
   $('mvSel').onchange = e => { S.revPid = +e.target.value; S.revSel = null; renderMoves(); drawChart(); if (S.tab === 'review') renderTabs(); };
   for (const b of box.querySelectorAll('[data-f]')) b.onclick = () => { S.revFilter = b.dataset.f; renderMoves(); };
   for (const el of box.querySelectorAll('[data-act]')) el.onclick = () => selectAction(+el.dataset.act, S.revSel !== +el.dataset.act);
   for (const el of box.querySelectorAll('[data-watch]')) el.onclick = e => { e.stopPropagation(); watchAction(+el.dataset.watch); };
-  for (const el of box.querySelectorAll('[data-ask]')) el.onclick = e => { e.stopPropagation(); if (typeof chatAskAbout === 'function') chatAskAbout(+el.dataset.ask); };
   for (const el of box.querySelectorAll('[data-jump]')) el.onclick = e => { e.stopPropagation(); jumpLeagueReplay(+el.dataset.jump - 10); };
   $('mvMe').onclick = () => { if (pid !== S.mePid) { markMe(g, pid); renderMoves(); renderTabs(); drawMap(); loadReplayList(); } };
   $('mvPrev').onclick = () => stepMove(-1); $('mvNext').onclick = () => stepMove(1);

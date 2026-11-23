@@ -34,14 +34,6 @@ async function runSelfTest() {
           const txt = `${a.title} ${a.detail} ${a.better}`;
           if (!GRADES[a.grade] || /undefined|NaN|null|\[object/.test(txt)) { bad.push(`bad action text: ${txt.slice(0, 120)}`); break; }
         }
-        if (typeof chatContext === 'function') { // what the chat sends Claude, at a few moments and for a selected move
-          for (const t of [0, g.duration / 2, g.duration]) {
-            S.t = t; S.revSel = S.review.actions.findIndex(a => Math.abs(a.t - t) < 40); if (S.revSel < 0) S.revSel = null;
-            const c = JSON.stringify(chatContext());
-            if (!c || /NaN|\[object|"undefined"|Infinity/.test(c)) { bad.push('chat context glitch @' + fmtTime(t)); break; }
-          }
-          S.revSel = null; S.t = 0;
-        }
         for (const tab of ['review', 'phases', 'moments', 'objectives', 'me', 'how']) {
           S.tab = tab; renderTabs();
           if (/undefined|NaN|\[object/.test(document.getElementById('tabBody').innerText)) bad.push('text glitch in tab ' + tab);

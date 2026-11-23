@@ -16,5 +16,4 @@ train/out/
 train/fetch_state.json
 train/fetch.log
 train/fetch_console.txt
-coach/highelo_index.json.gz
-coach/highelo_index.meta.json
+coach/

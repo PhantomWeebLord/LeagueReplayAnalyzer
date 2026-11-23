@@ -20,7 +20,6 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-import lra_coach
 import lra_core as core
 import lra_live
 from lra_core import RiotError
@@ -92,35 +91,6 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b)
 
-    def stream_chat(self, data):
-        """Ask Claude: streams newline-delimited JSON events (status, tool, text, done, error) until the answer is complete."""
-        chat_id = str(data.get("chatId") or "")
-        text = str(data.get("message") or "").strip()
-        if not re.fullmatch(r"[0-9a-f]{32}", chat_id) or not text:
-            return self.send_json({"error": "chatId and message required"}, 400)
-        ctx = data.get("context") if isinstance(data.get("context"), dict) else None
-        self.send_response(200)
-        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Accel-Buffering", "no")
-        self.end_headers()
-        self.close_connection = True
-        gone = [False]
-
-        def emit(ev):
-            if gone[0]:
-                return
-            try:
-                self.wfile.write((json.dumps(ev) + "\n").encode("utf-8"))
-                self.wfile.flush()
-            except (OSError, ValueError):  # ValueError: the socket's file object is already closed
-                gone[0] = True  # page closed or the user stopped the answer; let the turn finish quietly
-
-        try:
-            lra_coach.run_chat(chat_id, text[:4000], ctx, emit)
-        except lra_coach.ChatError as e:
-            emit({"type": "error", "text": str(e), "code": e.code})
-
     def send_empty(self, status):
         self.send_response(status)
         self.send_header("Content-Length", "0")
@@ -187,8 +157,6 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json(RECORDER.live_get("/replay/playback", timeout=1.5))
                 except Exception:
                     return self.send_json({"error": "Replay control is not available", "enabledInConfig": core.replay_api_enabled()})
-            if path == "/api/chat/status":
-                return self.send_json(lra_coach.chat_status())
             if path == "/api/replay/status":
                 return self.send_json(replay_status(arg("matchId").upper(), arg("version")))
             if path == "/api/replay/render":
@@ -293,14 +261,6 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json({"ok": True})
                 except (RiotError, OSError) as e:
                     return self.send_json({"error": str(e)})
-            if u.path == "/api/chat/key":
-                lra_coach.save_key(str(data.get("key") or ""))
-                return self.send_json(lra_coach.chat_status())
-            if u.path == "/api/chat/reset":
-                lra_coach.reset_chat(str(data.get("chatId") or ""))
-                return self.send_json({"ok": True})
-            if u.path == "/api/chat":
-                return self.stream_chat(data)
             return self.send_json({"error": "not found"}, 404)
         except Exception as e:
             return self.send_json({"error": f"{type(e).__name__}: {e}"}, 500)
