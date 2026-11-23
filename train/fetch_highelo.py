@@ -27,8 +27,8 @@ DATA = HERE / "data"
 STATE = HERE / "fetch_state.json"
 LOG = HERE / "fetch.log"
 REGION_OF = {"na1": "americas", "br1": "americas", "la1": "americas", "la2": "americas",
-             "euw1": "europe", "eun1": "europe", "tr1": "europe", "ru": "europe",
-             "kr": "asia", "jp1": "asia", "oc1": "sea", "sg2": "sea", "tw2": "sea", "vn2": "sea"}
+             "euw1": "europe", "eun1": "europe", "tr1": "europe", "ru": "europe", "me1": "europe",
+             "kr": "asia", "jp1": "asia", "oc1": "sea", "ph2": "sea", "sg2": "sea", "th2": "sea", "tw2": "sea", "vn2": "sea"}
 
 RANKED_SOLO_QUEUE = 420
 RIFT_MAP_ID = 11

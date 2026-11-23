@@ -242,9 +242,9 @@ class FetchToolTests(SandboxTest):
         with self.assertRaises(fh.KeyExpired):
             fh.wait_for_key("na1", "k", minutes=0)
 
-    def test_known_L6_region_tables_differ(self):
+    def test_region_tables_agree(self):
         import lra_core as core
-        self.assertEqual(sorted(k for k in core.PLATFORM_TO_REGION if k.lower() not in fh.REGION_OF), ["ME1", "PH2", "TH2"])
+        self.assertEqual({k.lower(): v for k, v in core.PLATFORM_TO_REGION.items()}, fh.REGION_OF)
 
 
 class FetchMainTests(SandboxTest):
