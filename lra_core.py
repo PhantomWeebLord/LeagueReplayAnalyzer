@@ -613,6 +613,16 @@ def lcu_get(path: str, timeout: float = LCU_TIMEOUT):
 _champ_table = None
 
 
+def _read_champion_table(path: Path):
+    """The saved champion table, or None if it is damaged."""
+    try:
+        table = json.loads(path.read_text("utf-8"))
+    except (OSError, ValueError):
+        return None
+    valid = isinstance(table, list) and all(isinstance(c, dict) and {"key", "id", "name"} <= c.keys() for c in table)
+    return table if valid else None
+
+
 def champion_table():
     """[{key: '62', id: 'MonkeyKing', name: 'Wukong'}, ...] from Data Dragon (cached)."""
     global _champ_table
@@ -620,8 +630,9 @@ def champion_table():
         return _champ_table
     CACHE.mkdir(exist_ok=True)
     cf = CACHE / f"champdata_{ddragon_version()}.json"
-    if cf.exists():
-        _champ_table = json.loads(cf.read_text("utf-8"))
+    table = _read_champion_table(cf) if cf.exists() else None
+    if table is not None:
+        _champ_table = table
         return _champ_table
     try:
         url = f"{DDRAGON_BASE}/cdn/{ddragon_version()}/data/en_US/champion.json"
@@ -631,12 +642,7 @@ def champion_table():
         write_atomic(cf, json.dumps(_champ_table))
     except Exception:  # offline on a new patch: use the newest table we have, and try again next time
         older = sorted(CACHE.glob("champdata_*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
-        for f in older:
-            try:
-                return json.loads(f.read_text("utf-8"))
-            except (OSError, ValueError):
-                continue
-        return []
+        return next((t for t in map(_read_champion_table, older) if t is not None), [])
     return _champ_table
 
 

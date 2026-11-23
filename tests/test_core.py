@@ -802,6 +802,11 @@ class ChampionDataTests(SandboxTest):
         self.assertEqual(len(core.champion_table()), 2)
         self.assertIsNone(core._champ_table)
 
+    def test_offline_skips_wrong_shape_older_table(self):
+        core._dd_version = "9.9.9"
+        (core.CACHE / "champdata_1.json").write_text('[{"oops": 1}]', "utf-8")
+        self.assertEqual(core.champion_table(), [])
+
     def test_offline_skips_corrupt_older_table(self):
         core._dd_version = "9.9.9"
         (core.CACHE / "champdata_1.json").write_text("{bad", "utf-8")
@@ -811,11 +816,16 @@ class ChampionDataTests(SandboxTest):
         core._dd_version = "9.9.9"
         self.assertEqual(core.champion_table(), [])
 
-    def test_known_H9_corrupt_current_table_raises(self):
-        core._dd_version = "9.9.9"
+    def test_corrupt_current_table_is_downloaded_again(self):
+        self.net("9.9.9")
         (core.CACHE / "champdata_9.9.9.json").write_text("{bad", "utf-8")
-        with self.assertRaises(ValueError):
-            core.champion_table()
+        self.assertEqual(len(core.champion_table()), 10)
+        self.assertEqual(len(json.loads((core.CACHE / "champdata_9.9.9.json").read_text("utf-8"))), 10)
+
+    def test_table_of_the_wrong_shape_is_ignored(self):
+        core._dd_version = "9.9.9"
+        (core.CACHE / "champdata_9.9.9.json").write_text('{"a": 1}', "utf-8")
+        self.assertEqual(core.champion_table(), [])
 
     def test_champion_names_maps_numeric_key_to_internal_id(self):
         core._champ_table = fx.CHAMPION_TABLE
