@@ -106,8 +106,13 @@ function deathTimer(level, t) {
 // ward events), synthesise those events, and attach precise series for vision, deaths and your gold/health.
 const NON_PURCHASE_ITEMS = new Set([3865, 3866, 3867, 3869, 3870, 3871, 3876, 3877, // support quest line (upgrades anywhere)
   3042, 3040, 3121, 3513, 3599, 3600, 2052]); // Muramana / Seraph's / Fimbulwinter transforms, Eye of the Herald, Kalista spear, Poro-snax
+function isUsableRecording(live) {
+  if (!live || !Array.isArray(live.snaps) || live.snaps.length < 5 || !Array.isArray(live.players)) return false;
+  const n = live.players.length;
+  return live.snaps.every(s => s && isNum(s.t) && Array.isArray(s.p) && s.p.length === n && s.p.every(Array.isArray));
+}
 function enrichWithLive(data, live) {
-  if (!live || !live.snaps || live.snaps.length < 5) return data;
+  if (!isUsableRecording(live)) return data; // a damaged recording must not block the review of the game
   const parts = data.match.info.participants;
   const norm = v => String(v || '').toLowerCase().replace(/[^a-z0-9]/g, '');
   const pids = live.players.map(lp => {

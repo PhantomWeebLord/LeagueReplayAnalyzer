@@ -177,4 +177,10 @@ test('live respawn times override estimates', () => {
   l.snaps = [...Array(8).keys()].map(k => ({ t: d.t - 2 + k * 2, g: 1, hp: 1, p: l.players.map((_x, j) => [1, 0, 0, 0, 0, 0, j === i && k >= 1 && k < 4 ? 1 : 0, 0, []]) }));
   const g = buildGame(enrichWithLive(G('lcu'), l)); near(g.byId[p.id].deaths[0].respawn, d.t + 6, 0.01);
 });
-test('known M12: malformed live recording throws', () => { throws(() => enrichWithLive(G('lcu'), { snaps: Array(6).fill({ t: 1 }), players: [{ team: 100, championId: 'MonkeyKing' }] })); });
+test('a damaged live recording is ignored', () => {
+  const good = liveFor('lcu');
+  const bad = [{ snaps: Array(6).fill({ t: 1 }), players: [{ team: 100, championId: 'MonkeyKing' }] }, { ...good, players: null }, { ...good, players: 'x' }, { ...good, snaps: 'x' },
+    { ...good, snaps: good.snaps.map((s, i) => (i === 2 ? null : s)) }, { ...good, snaps: good.snaps.map((s, i) => (i === 2 ? { ...s, p: s.p.slice(0, 3) } : s)) },
+    { ...good, snaps: good.snaps.map((s, i) => (i === 2 ? { ...s, t: 'x' } : s)) }, { ...good, snaps: good.snaps.map((s, i) => (i === 2 ? { ...s, p: s.p.map(() => null) } : s)) }];
+  for (const l of bad) { const d = G('lcu'); eq(enrichWithLive(d, l), d); }
+});
