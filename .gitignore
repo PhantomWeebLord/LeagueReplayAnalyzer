@@ -9,6 +9,7 @@ window-v2/
 .env
 .claude/
 *.tmp
+tests/.local/
 
 # Riot game data is not redistributed
 train/data/
