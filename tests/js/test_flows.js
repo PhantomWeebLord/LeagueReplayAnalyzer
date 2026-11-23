@@ -42,10 +42,10 @@ test('flow: missing match shows the replay stats', async () => { await openRepla
 test('flow: replay without an ID', async () => { await openReplay({ file: 'x.rofl', players: [] }); ok($('banner').textContent.includes('Could not determine')); banner(''); });
 test('flow: latest replay wins a race', async () => { const a = replayFor(/5000000201/), b = replayFor(/5000000203/); await Promise.all([openReplay(a), openReplay(b)]); eq(S.game.matchId, b.matchId); });
 test('flow: server unreachable message', async () => { const real = window.fetch; window.fetch = (u, o) => (String(u).startsWith('/api/match') ? Promise.reject(new TypeError('down')) : real(u, o)); try { await openReplay({ file: 'f', matchId: 'NA1_5000000203', players: [] }); ok($('banner').textContent.includes('Could not reach')); } finally { window.fetch = real; } });
-test('known H11: zero-player game leaves the page on Loading', async () => {
-  const d = G('short'); d.match.info.participants = []; TT.allowRejections = true; let msg = '';
-  try { await stubbedApi({ '/api/match': d }, async () => { try { await openReplay({ file: 'f', matchId: 'NA1_1', players: [] }); } catch (e) { msg = e.message; } }); } finally { TT.allowRejections = false; }
-  ok(/reading 'id'/.test(msg), msg); ok($('banner').textContent.includes('Loading')); banner('');
+test('flow: a game with no players shows a clear error', async () => {
+  const d = G('short'); d.match.info.participants = [];
+  await stubbedApi({ '/api/match': d }, () => openReplay({ file: 'f', matchId: 'NA1_1', players: [] }));
+  eq(S.game, null); ok($('banner').textContent.includes('no players')); ok(visible('welcome') && !visible('app')); banner('');
 });
 test('flow: save an API key from the UI', async () => { $('apiKey').value = ' RGAPI-test '; $('saveKey').click(); ok(await until(() => $('keyStatus').textContent.includes('Key saved'))); eq($('apiKey').value, ''); await api('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"apiKey":""}' }); await refreshConfig(); banner(''); });
 test('flow: Trends analyses every replay', async () => {

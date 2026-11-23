@@ -17,6 +17,8 @@ const BRW = [6, 6, 8, 8, 10, 12, 16, 21, 26, 32.5, 35, 37.5, 40, 42.5, 45, 47.5,
 const ROLE_ORDER = { TOP: 0, JUNGLE: 1, MIDDLE: 2, BOTTOM: 3, UTILITY: 4 };
 const ROLE_SHORT = { TOP: 'Top', JUNGLE: 'Jungle', MIDDLE: 'Mid', BOTTOM: 'Bot', UTILITY: 'Support' };
 const SAMPLE_STEP = 2; // seconds
+const RIFT_MAP_ID = 11;
+const POSITION_LIMITS = { min: -600, max: 15600 }; // anything further out is bad data, not a real position
 // game rules, in seconds unless noted
 const INHIB_RESPAWN = 300, NEXUS_TURRET_RESPAWN = 180;
 const BARON_BUFF = 180, ELDER_BUFF = 150, HERALD_EFFECT = 240;
@@ -160,22 +162,45 @@ function enrichWithLive(data, live) {
   return Object.assign({}, data, { live: out });
 }
 
+// ---------------------------------------------------------------- input checks
+const isNum = v => typeof v === 'number' && Number.isFinite(v);
+const num = (v, fallback = 0) => { const n = typeof v === 'string' && v.trim() === '' ? NaN : Number(v ?? NaN); return Number.isFinite(n) ? n : fallback; };
+function validPos(pos) {
+  if (!pos || !Number.isFinite(pos.x === null ? NaN : Number(pos.x)) || !Number.isFinite(pos.y === null ? NaN : Number(pos.y))) return null;
+  return { x: clamp(Number(pos.x), POSITION_LIMITS.min, POSITION_LIMITS.max), y: clamp(Number(pos.y), POSITION_LIMITS.min, POSITION_LIMITS.max) };
+}
+// Data the analysis cannot work with gets a clear error here, instead of a confident review of nothing.
+function validateGameData(data) {
+  const info = data && data.match && data.match.info, tl = data && data.timeline && data.timeline.info;
+  if (!info || !tl) throw new Error('The match data is incomplete.');
+  if (info.mapId && info.mapId !== RIFT_MAP_ID) throw new Error(`Only Summoner's Rift games are supported (this game was on map ${info.mapId}).`);
+  const players = info.participants;
+  if (!Array.isArray(players) || !players.length) throw new Error('The match data has no players.');
+  if (players.some(p => !p || p.participantId == null || !ENEMY[p.teamId])) throw new Error('The match data has invalid players.');
+  if (!Array.isArray(tl.frames) || !tl.frames.some(f => f && isNum(f.timestamp))) throw new Error('The match timeline is empty.');
+}
+
 // ---------------------------------------------------------------- build
 function buildGame(data, opts) {
+  validateGameData(data);
   const info = data.match.info;
   const tlInfo = data.timeline.info;
-  if (info.mapId && info.mapId !== 11) throw new Error(`Only Summoner's Rift games are supported (this game was on map ${info.mapId}).`);
-  const frames = tlInfo.frames || [];
+  const frames = tlInfo.frames.filter(f => f && isNum(f.timestamp));
   const events = [];
-  for (const f of frames) for (const e of f.events || []) events.push(Object.assign({ t: e.timestamp / 1000 }, e));
+  let droppedEvents = 0;
+  for (const f of frames) for (const e of f.events || []) {
+    if (!e || !isNum(e.timestamp)) { droppedEvents++; continue; }
+    events.push(Object.assign({ t: e.timestamp / 1000 }, e));
+  }
   events.sort((a, b) => a.t - b.t);
   const endEv = events.find(e => e.type === 'GAME_END');
   const lastFrameT = frames.length ? frames[frames.length - 1].timestamp / 1000 : 0;
   const duration = endEv ? endEv.t : Math.max(lastFrameT, info.gameDuration > 10000 ? info.gameDuration / 1000 : info.gameDuration || 0);
+  if (!(duration > 0)) throw new Error('This match has no game time to analyse.');
 
   const ps = info.participants.map(p => ({
-    id: p.participantId, puuid: p.puuid, team: p.teamId, champ: p.championName, cname: champName(p.championName),
-    name: p.riotIdGameName || p.summonerName || p.championName, tag: p.riotIdTagline || '',
+    id: p.participantId, puuid: p.puuid, team: p.teamId, champ: p.championName || String(p.championId ?? 'Unknown'), cname: champName(p.championName || String(p.championId ?? 'Unknown')),
+    name: p.riotIdGameName || p.summonerName || p.championName || 'Unknown', tag: p.riotIdTagline || '',
     role: p.teamPosition || p.individualPosition || '', final: p,
   }));
   ps.sort((a, b) => a.team - b.team || (ROLE_ORDER[a.role] ?? 9) - (ROLE_ORDER[b.role] ?? 9));
@@ -190,13 +215,14 @@ function buildGame(data, opts) {
     for (const f of frames) {
       const pf = (f.participantFrames && (f.participantFrames[p.id] || f.participantFrames[String(p.id)])) || prev;
       prev = pf;
-      s.gold.push(pf ? pf.totalGold || 0 : 0);
-      s.xp.push(pf ? pf.xp || 0 : 0);
-      s.cs.push(pf ? (pf.minionsKilled || 0) + (pf.jungleMinionsKilled || 0) : 0);
-      s.level.push(pf ? pf.level || 1 : 1);
-      s.cur.push(pf ? pf.currentGold || 0 : 0);
-      s.x.push(pf && pf.position ? pf.position.x : FOUNTAIN[p.team].x);
-      s.y.push(pf && pf.position ? pf.position.y : FOUNTAIN[p.team].y);
+      s.gold.push(pf ? num(pf.totalGold) : 0);
+      s.xp.push(pf ? num(pf.xp) : 0);
+      s.cs.push(pf ? num(pf.minionsKilled) + num(pf.jungleMinionsKilled) : 0);
+      s.level.push(pf ? num(pf.level) || 1 : 1);
+      s.cur.push(pf ? num(pf.currentGold) : 0);
+      const at = validPos(pf && pf.position) || FOUNTAIN[p.team];
+      s.x.push(at.x);
+      s.y.push(at.y);
     }
     p.series = s;
     p.levelUps = []; p.deaths = []; p.kills = []; p.assistsAt = [];
@@ -205,6 +231,9 @@ function buildGame(data, opts) {
   for (const e of events) if (e.type === 'LEVEL_UP' && byId[e.participantId]) byId[e.participantId].levelUps.push({ t: e.t, level: e.level });
 
   const game = { info, events, duration, ps, byId, winner, ft, frames, matchId: data.match.metadata?.matchId, source: data.source || 'riot-api' };
+  game.dataNotes = [];
+  if (ps.length !== 10) game.dataNotes.push(`This game has ${ps.length} players, so team comparisons are approximate.`);
+  if (droppedEvents) game.dataNotes.push(`${droppedEvents} timeline event${droppedEvents === 1 ? ' was' : 's were'} unreadable and left out.`);
   game.hasWards = events.some(e => e.type === 'WARD_PLACED');
   game.live = data.live || null;
   game.hasItems = events.some(e => e.type === 'ITEM_PURCHASED');
@@ -216,7 +245,7 @@ function buildGame(data, opts) {
   for (const e of events) {
     if (e.type !== 'CHAMPION_KILL' || !byId[e.victimId]) continue;
     const victim = byId[e.victimId];
-    const pos = e.position || { x: interpSeries(ft, victim.series.x, e.t), y: interpSeries(ft, victim.series.y, e.t) };
+    const pos = validPos(e.position) || { x: interpSeries(ft, victim.series.x, e.t), y: interpSeries(ft, victim.series.y, e.t) };
     const k = { t: e.t, killer: e.killerId, victim: e.victimId, assists: e.assistingParticipantIds || [], x: pos.x, y: pos.y,
       team: ENEMY[victim.team], bounty: (e.bounty || 0) + (e.shutdownBounty || 0) };
     game.kills.push(k);
@@ -976,7 +1005,7 @@ function playerReport(game, pid) {
 
 // exports (browser globals)
 Object.assign(window, {
-  enrichWithLive, CHAMP_NAMES, champName, SR, FOUNTAIN, TEAM_NAME, ENEMY, WEIGHTS, FACTOR_LABEL, ROLE_SHORT, MONSTER_NAME,
+  enrichWithLive, validateGameData, CHAMP_NAMES, champName, SR, FOUNTAIN, TEAM_NAME, ENEMY, WEIGHTS, FACTOR_LABEL, ROLE_SHORT, MONSTER_NAME,
   fmtTime, fmtGold, clamp, lerp, dist, interpSeries, zoneOf, buildGame, posAt, posConfidence, isDead, levelAt, countBefore,
   structureAlive, influence, influenceAtPoint, nearbyCounts, stateAt, smoothAt, sampleIndex, wardCount, playerReport, describeFight, eventsBetween, SAMPLE_STEP,
   WP_FEATS, WP_GROUP, FACTORS, evalState, wpFeatures, wpPredict, wpWithoutDeath, wpAt, wpFor, wpModelFor, knotWeights, teamGoldAt,

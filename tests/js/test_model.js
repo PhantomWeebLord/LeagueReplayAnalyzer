@@ -57,17 +57,24 @@ test('known H12: URF on the Rift is graded like a normal game', () => { const d 
 test('known M14: a future patch is analysed with no warning', () => { const d = G('short'); d.match.info.gameVersion = '99.1.1.1'; ok(reviewGame(buildGame(d)).actions.length > 0); });
 
 const MALFORMED = {
-  'match missing': [d => { delete d.match; }, /info/], 'timeline missing': [d => { delete d.timeline; }, /info/], 'participants missing': [d => { delete d.match.info.participants; }, /map/],
-  'team id invalid': [d => { parts(d)[0].teamId = 300; }, /x/], 'teamId missing': [d => { delete parts(d)[0].teamId; }, /x/],
-  'event without timestamp': [d => { frames(d).find(f => f.events.some(e => e.type === 'CHAMPION_KILL')).events.find(e => e.type === 'CHAMPION_KILL').timestamp = undefined; }, /raw/],
+  'match missing': [d => { delete d.match; }, /incomplete/], 'timeline missing': [d => { delete d.timeline; }, /incomplete/], 'participants missing': [d => { delete d.match.info.participants; }, /no players/],
+  'no participants': [d => { d.match.info.participants = []; }, /no players/], 'team id invalid': [d => { parts(d)[0].teamId = 300; }, /invalid players/], 'teamId missing': [d => { delete parts(d)[0].teamId; }, /invalid players/],
+  'participant id missing': [d => { delete parts(d)[0].participantId; }, /invalid players/], 'no frames': [d => { d.timeline.info.frames = []; }, /timeline is empty/], 'frames undefined': [d => { delete d.timeline.info.frames; }, /timeline is empty/],
+  'frames without timestamps': [d => { for (const f of frames(d)) delete f.timestamp; }, /timeline is empty/],
 };
-for (const [name, [mut, re]] of Object.entries(MALFORMED)) test(`malformed data throws: ${name}`, () => { const d = G('short'); mut(d); throws(() => reviewGame(buildGame(d)), re); });
-const SILENT = {
-  'no frames': d => { d.timeline.info.frames = []; }, 'frames undefined': d => { delete d.timeline.info.frames; }, 'one player missing': d => { parts(d).pop(); },
-  'no participants': d => { d.match.info.participants = []; }, 'text in gold': d => { frames(d)[5].participantFrames['1'].totalGold = 'x'; },
-  'position off the map': d => { frames(d)[5].participantFrames['1'].position = { x: 999999, y: -999999 }; },
-};
-for (const [name, mut] of Object.entries(SILENT)) test(`known H11: bad data still produces a review: ${name}`, () => { const d = G('short'); mut(d); const R = reviewGame(buildGame(d)); ok(Array.isArray(R.actions)); });
+for (const [name, [mut, re]] of Object.entries(MALFORMED)) test(`malformed data gives a clear error: ${name}`, () => { const d = G('short'); mut(d); throws(() => buildGame(d), re); });
+test('null data gives a clear error', () => { for (const v of [null, undefined, {}, { match: {} }]) throws(() => buildGame(v), /incomplete/); });
+test('event without timestamp is dropped and noted', () => {
+  const d = G('short'); const n = gameOf('short').kills.length; frames(d).find(f => f.events.some(e => e.type === 'CHAMPION_KILL')).events.find(e => e.type === 'CHAMPION_KILL').timestamp = undefined;
+  const g = buildGame(d); eq(g.kills.length, n - 1); ok(g.dataNotes.some(x => /1 timeline event/.test(x))); ok(reviewGame(g).actions.length > 0);
+});
+test('non-numeric frame values become zero', () => { const d = G('short'); frames(d)[5].participantFrames['1'].totalGold = 'x'; frames(d)[5].participantFrames['1'].xp = null; const g = buildGame(d); eq(g.byId[1].series.gold[5], 0); eq(g.byId[1].series.xp[5], 0); ok(g.samples.every(s => isFinite(s.control))); });
+test('positions off the map are clamped', () => { const d = G('short'); frames(d)[5].participantFrames['1'].position = { x: 999999, y: -999999 }; const g = buildGame(d); eq([g.byId[1].series.x[5], g.byId[1].series.y[5]], [15600, -600]); });
+test('non-numeric position uses the fountain', () => { const d = G('short'); frames(d)[5].participantFrames['1'].position = { x: 'a', y: null }; const g = buildGame(d); eq(g.byId[1].series.x[5], 420); });
+test('kill with a bad position uses the victim track', () => { const d = G('short'); const k = frames(d).find(f => f.events.some(e => e.type === 'CHAMPION_KILL')).events.find(e => e.type === 'CHAMPION_KILL'); k.position = { x: 'a' }; ok(buildGame(d).kills.every(x => isFinite(x.x) && isFinite(x.y))); });
+test('incomplete lobby still builds and is noted', () => { const d = G('short'); parts(d).pop(); const g = buildGame(d); eq(g.ps.length, 9); ok(g.dataNotes.some(x => /9 players/.test(x))); ok(reviewGame(g).actions.length > 0); });
+test('complete game has no data notes', () => { eq(gameOf('riot-16.23').dataNotes, []); });
+test('missing champion name falls back to its ID', () => { const d = G('short'); parts(d)[0].championName = null; const p = buildGame(d).byId[1]; eq(p.champ, '62'); });
 test('frame without participantFrames holds last values', () => { const d = G('short'); delete frames(d)[5].participantFrames; const g = buildGame(d); eq(g.ps[0].series.gold[5], g.ps[0].series.gold[4]); });
 test('player missing from a frame holds last values', () => { const d = G('short'); delete frames(d)[5].participantFrames['1']; const g = buildGame(d); const p = g.byId[1]; eq(p.series.xp[5], p.series.xp[4]); });
 test('first frame without data uses fountain', () => { const d = G('short'); delete frames(d)[0].participantFrames; const g = buildGame(d); eq([g.byId[1].series.x[0], g.byId[6].series.x[0]], [420, 14300]); });
@@ -78,7 +85,7 @@ test('unknown event type is ignored', () => { const d = G('short'); frames(d)[3]
 test('kill with unknown victim is ignored', () => { const d = G('short'); const n = gameOf('short').kills.length; frames(d)[3].events.push({ type: 'CHAMPION_KILL', timestamp: 170000, victimId: 99, killerId: 1 }); eq(buildGame(d).kills.length, n); });
 test('execute kill (no killer) is kept', () => { const d = G('short'); frames(d).find(f => f.events.some(e => e.type === 'CHAMPION_KILL')).events.find(e => e.type === 'CHAMPION_KILL').killerId = 0; ok(buildGame(d).kills.some(k => k.killer === 0)); });
 test('very short game', () => { const d = G('short'); d.timeline.info.frames = frames(d).slice(0, 4); for (const f of frames(d)) f.events = f.events.filter(e => e.type !== 'GAME_END'); d.match.info.gameDuration = 180; eq(Math.round(buildGame(d).duration), 180); });
-test('zero duration game', () => { const d = G('short'); d.match.info.gameDuration = 0; d.timeline.info.frames = frames(d).slice(0, 1); frames(d)[0].events = []; const g = buildGame(d); eq(g.duration, 0); eq(reviewGame(g).actions.length, 0); });
+test('zero duration game is refused', () => { const d = G('short'); d.match.info.gameDuration = 0; d.timeline.info.frames = frames(d).slice(0, 1); frames(d)[0].events = []; throws(() => buildGame(d), /no game time/); });
 
 test('light mode skips sampling', () => { const g = buildGame(G('short'), { light: true, noModel: true }); eq(g.samples, undefined); eq(g.wpm, null); });
 test('hand-weighted score without model', () => { const g = buildGame(G('short'), { noModel: true }); eq(g.wpm, null); ok(g.samples.every(s => s.control >= -1 && s.control <= 1)); });

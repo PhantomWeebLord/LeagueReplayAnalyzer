@@ -255,7 +255,7 @@ async function openReplay(meta, refresh) {
     S.review = reviewGame(S.game);
     console.log(`Game model built in ${(performance.now() - t0).toFixed(0)} ms`, S.game);
   } catch (e) { S.game = null; S.review = null; console.error(e); showMetaOnly(meta, 'Could not analyse this match: ' + e.message); return; }
-  banner('');
+  banner((S.game.dataNotes || []).map(esc).join(' '));
   S.focus = null;
   S.mePid = (meIn(S.game.ps) || {}).id || null;
   S.revPid = S.mePid || S.game.ps[0].id; S.revSel = null; S.stopAt = null;
