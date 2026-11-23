@@ -653,22 +653,29 @@ def replay_api_enabled():
         return False
 
 
+def _with_replay_api(txt: str) -> str:
+    newline = "\r\n" if "\r\n" in txt else "\n"
+    if re.search(r"(?im)^[ \t]*EnableReplayApi[ \t]*=", txt):
+        return re.sub(r"(?im)^[ \t]*EnableReplayApi[ \t]*=[^\r\n]*", "EnableReplayApi=1", txt)
+    header = re.search(r"(?im)^\[General\][ \t]*(\r?\n|\Z)", txt)
+    if not header:
+        return f"[General]{newline}EnableReplayApi=1{newline}" + txt
+    insert = f"{'' if header.group(1) else newline}EnableReplayApi=1{newline}"
+    return txt[:header.end()] + insert + txt[header.end():]
+
+
 def enable_replay_api():
-    """Adds EnableReplayApi=1 under [General] in League's game.cfg (a backup is kept next to it)."""
+    """Adds EnableReplayApi=1 under [General] in League's game.cfg. Every other byte is preserved, the write is atomic,
+    and a backup of the original is kept next to it."""
     p = game_cfg_path()
     if not p or not p.exists():
         raise RiotError(404, "Could not find League's Config/game.cfg (open the League client first).")
-    txt = p.read_text("utf-8", "surrogateescape")  # keeps any non-UTF-8 bytes in League's file intact
+    raw = p.read_bytes()
     backup = p.with_name("game.cfg.lra-backup")
     if not backup.exists():
-        backup.write_text(txt, "utf-8", "surrogateescape")
-    if re.search(r"(?im)^\s*EnableReplayApi\s*=", txt):
-        txt = re.sub(r"(?im)^\s*EnableReplayApi\s*=.*$", "EnableReplayApi=1", txt)
-    elif re.search(r"(?im)^\[General\]\s*$", txt):
-        txt = re.sub(r"(?im)^\[General\]\s*$", "[General]\nEnableReplayApi=1", txt, count=1)
-    else:
-        txt = "[General]\nEnableReplayApi=1\n" + txt
-    p.write_text(txt, "utf-8", "surrogateescape")
+        write_atomic_bytes(backup, raw)
+    txt = raw.decode("utf-8", "surrogateescape")  # keeps any non-UTF-8 bytes in League's file intact
+    write_atomic_bytes(p, _with_replay_api(txt).encode("utf-8", "surrogateescape"))
     return True
 
 

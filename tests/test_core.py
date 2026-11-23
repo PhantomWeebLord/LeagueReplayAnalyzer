@@ -864,10 +864,26 @@ class GameConfigTests(SandboxTest):
         with self.assertRaises(core.RiotError):
             core.enable_replay_api()
 
-    def test_known_H3_edit_changes_line_endings_and_blank_lines(self):
-        p = self.cfg(b"[General]\n\nWindowMode=2\n")
-        core.enable_replay_api()
-        self.assertEqual(p.read_bytes(), b"[General]\r\nEnableReplayApi=1\r\nWindowMode=2\r\n")
+    def test_edit_preserves_every_other_byte(self):
+        cases = {b"[General]\n\nWindowMode=2\n": b"[General]\nEnableReplayApi=1\n\nWindowMode=2\n",
+                 b"[General]\r\n\r\nWindowMode=2\r\n": b"[General]\r\nEnableReplayApi=1\r\n\r\nWindowMode=2\r\n",
+                 b"[A]\r\nX=1\r\n[General]\r\nY=2": b"[A]\r\nX=1\r\n[General]\r\nEnableReplayApi=1\r\nY=2",
+                 b"[General]\r\nEnableReplayApi=0\r\nX=1\r\n": b"[General]\r\nEnableReplayApi=1\r\nX=1\r\n",
+                 b"[General]": b"[General]\nEnableReplayApi=1\n", b"[Other]\r\nX=1\r\n": b"[General]\r\nEnableReplayApi=1\r\n[Other]\r\nX=1\r\n"}
+        for before, after in cases.items():
+            with self.subTest(before=before):
+                p = self.cfg(before)
+                p.with_name("game.cfg.lra-backup").unlink(missing_ok=True)
+                core.enable_replay_api()
+                self.assertEqual(p.read_bytes(), after)
+                self.assertEqual(p.with_name("game.cfg.lra-backup").read_bytes(), before)
+
+    def test_failed_write_leaves_game_cfg_untouched(self):
+        p = self.cfg(b"[General]\nA=1\n")
+        self.patch(os, "replace", lambda *_a: (_ for _ in ()).throw(OSError("disk")))
+        with self.assertRaises(OSError):
+            core.enable_replay_api()
+        self.assertEqual(p.read_bytes(), b"[General]\nA=1\n")
 
 
 class PatchAndClientTests(SandboxTest):
