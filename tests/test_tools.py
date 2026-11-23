@@ -110,6 +110,14 @@ class IconTests(SandboxTest):
         self.assertNotIn("anthropic", joined)
 
 
+class ReleaseWorkflowTests(SandboxTest):
+    def test_tests_run_before_the_exe_is_built_and_published(self):
+        text = (ROOT / ".github" / "workflows" / "release.yml").read_text("utf-8")
+        run, build, publish = text.index("tests/run_all.py"), text.index("python build_exe.py"), text.index("gh release create")
+        self.assertLess(run, build)
+        self.assertLess(build, publish)
+
+
 class FetchToolTests(SandboxTest):
     def setUp(self):
         super().setUp()
