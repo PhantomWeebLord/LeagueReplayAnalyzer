@@ -84,8 +84,8 @@ Retries, caching and validation change behavior by design, so they were done as 
 
 | Item | Why it remains | Impact |
 |---|---|---|
-| M13: patch-specific game rules | Death timers and ward lifetimes need per-patch data that Riot does not publish in a usable form | Older replays are approximate, and the app now says so |
-| M16: live recordings are never deleted | Automatically deleting a player's recordings is riskier than the disk use | Roughly a few MB per recorded game |
+| M13: patch-specific game rules | Death timers and ward lifetimes would need a per-patch rules table that the app does not have | Older replays are approximate, and the app now says so |
+| M16: live recordings are never deleted | Automatically deleting a player's recordings is riskier than the disk use | Small: the recordings on the test PC average about 45 KB, and the largest is about 150 KB |
 | L2: local TLS is not verified | League uses a self-signed certificate on localhost | Low; traffic stays on this PC |
 
 Long rendering functions such as `drawMap` and `renderTrends` were left intact. They have no pixel-level safety net, so splitting them would risk visual changes the tests could not catch.
