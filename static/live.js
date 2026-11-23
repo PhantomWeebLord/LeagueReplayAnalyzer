@@ -17,7 +17,9 @@ const LV = {
 };
 
 const liveVisible = () => !$('live').classList.contains('hidden');
-const avgOf = arr => { const v = arr.filter(x => x != null && isFinite(x)); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; };
+const avgOf = avg;
+const LIVE_POLL_FAST_MS = 1000, LIVE_POLL_SLOW_MS = 4000;
+const DEBRIEF_RETRY_MS = 10000, DEBRIEF_MAX_TRIES = 90; // Riot can take a few minutes to publish a match
 
 async function loadLiveSessions() {
   try { const s = await api('/api/live/sessions'); LV.sessions = Array.isArray(s) ? s : []; } catch { LV.sessions = []; }
@@ -94,7 +96,7 @@ async function livePoll() {
   if (s && s.mode === 'play' && s.ended) maybeDebrief(s);
   if (liveVisible()) renderLive();
   const fast = liveVisible() || S.follow || (st && st.status === 'spectate');
-  LV.timer = setTimeout(livePoll, fast ? 1000 : 4000);
+  LV.timer = setTimeout(livePoll, fast ? LIVE_POLL_FAST_MS : LIVE_POLL_SLOW_MS);
 }
 
 async function followReplay(matchId) {
@@ -137,7 +139,7 @@ async function maybeDebrief(s) {
         return;
       }
     }
-    if (LV.debriefTries < 90) setTimeout(attempt, 10000); // Riot can take a few minutes to publish the match
+    if (LV.debriefTries < DEBRIEF_MAX_TRIES) setTimeout(attempt, DEBRIEF_RETRY_MS);
     else { LV.debrief = null; LV.gaveUp = [...(LV.gaveUp || []), s.id]; banner('Match data for your last game is not available yet — open it later from Live → Recorded games.', true); }
     if (liveVisible()) renderLive();
   };
@@ -246,14 +248,6 @@ async function jumpLeagueReplay(t) {
   if (r && r.error) banner(esc(r.error), true);
 }
 
-async function watchInLeague() {
-  const mid = S.meta && S.meta.matchId;
-  if (!mid) return;
-  banner('Starting the replay in League… this window will follow along once it loads.');
-  const r = await api('/api/replay/watch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ matchId: mid, path: S.meta.path }) });
-  if (r && r.error) banner(esc(r.error) + ' (replays only play on the patch they were recorded on).', true);
-}
-
 function showLive(on) {
   $('live').classList.toggle('hidden', !on);
   $('liveBtn').classList.toggle('on', on);
@@ -284,7 +278,6 @@ function updateCoachBar() {
 function wireLive() {
   $('liveBtn').onclick = () => showLive($('live').classList.contains('hidden'));
   $('followChip').onclick = () => { S.follow = false; LV.followStopped = true; updateFollowChip(); };
-  $('watchLeague').onclick = watchInLeague;
   loadLiveSessions();
   livePoll();
 }

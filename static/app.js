@@ -42,6 +42,7 @@ function linkReplayPlayers(g, meta) {
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const teamCls = t => (t === 100 ? 'b' : t === 200 ? 'r' : '');
 const COLORS = { 100: '#3d8bff', 200: '#ef4b5c' };
+const PING_INTERVAL_MS = 20000; // keep-alive for the packaged app
 
 async function api(path, opts) {
   const r = await fetch(path, opts);
@@ -73,7 +74,7 @@ async function init() {
   requestAnimationFrame(loop);
   // keep-alive for the packaged app (it quits shortly after its window is closed)
   const ping = () => api('/api/ping').catch(() => {});
-  setInterval(ping, 20000);
+  setInterval(ping, PING_INTERVAL_MS);
   window.addEventListener('pagehide', () => { try { navigator.sendBeacon('/api/bye', ''); } catch { /* ignore */ } });
   // a .rofl passed to the exe (drag & drop onto the icon / "Open with")
   const openPath = new URLSearchParams(location.search).get('open');
@@ -246,7 +247,6 @@ async function openReplay(meta, refresh) {
   $('matchTitle').innerHTML = `${esc(g.matchId || meta.matchId)} · ${fmtTime(g.duration)} · ${winTxt} ${src}` +
     (me ? ` <span class="muted">· you: ${esc(me.cname)} (${TEAM_NAME[me.team]})</span>` : '');
   S.heatT = -1;
-  $('watchLeague').classList.add('hidden'); // v2: the replay view opens League itself
   if (typeof rsOnGameOpened === 'function') rsOnGameOpened();
   sizeCanvases();
   S.t = 0; S.lastUi = 0;
@@ -381,15 +381,15 @@ function updateSide() {
   const thPro = trained ? 0.04 : 0.015, thCon = trained ? 0.05 : 0.02;
   const R = st.raw;
   const why = {
-    gold: tm => `${fmtGold(Math.abs(R.goldB - R.goldR), false)} gold ahead`,
+    gold: () => `${fmtGold(Math.abs(R.goldB - R.goldR), false)} gold ahead`,
     xp: () => 'a level advantage', vision: () => 'more wards on the map',
-    map: () => 'more of the map under control', obj: () => 'an objective lead', numbers: tm => `a numbers advantage (${R.aliveB}v${R.aliveR})`,
+    map: () => 'more of the map under control', obj: () => 'an objective lead', numbers: () => `a numbers advantage (${R.aliveB}v${R.aliveR})`,
   };
   let txt;
   if (!leader) txt = '<b>Even</b>: neither team has a clear edge right now.';
   else {
     const sg = leader === 100 ? 1 : -1;
-    const pro = contrib.filter(([, v]) => v * sg > thPro).sort((a, b) => b[1] * sg - a[1] * sg).slice(0, 2).map(([k]) => why[k](leader));
+    const pro = contrib.filter(([, v]) => v * sg > thPro).sort((a, b) => b[1] * sg - a[1] * sg).slice(0, 2).map(([k]) => why[k]());
     const con = contrib.filter(([, v]) => v * sg < -thCon).sort((a, b) => a[1] * sg - b[1] * sg)[0];
     const strength = trained ? (Math.abs(ctrl) > 0.6 ? 'heavily favoured' : Math.abs(ctrl) > 0.3 ? 'favoured' : 'slightly favoured')
       : Math.abs(ctrl) > 0.45 ? 'firmly in control' : Math.abs(ctrl) > 0.22 ? 'in control' : 'slightly ahead';
@@ -743,7 +743,7 @@ function tabHowTrained() {
     <p><b>Limits:</b> it's a correlational model of what tends to win high-elo games. It can't see health, cooldowns, item spikes or ward positions, and it doesn't suggest the best alternative move like a chess engine does. Positions between the once-a-minute snapshots are estimated along lanes and jungle paths. Custom games have no ward data, so they use a version of the model without vision.</p>
     <p class="muted small">Replay Analyzer isn't endorsed by Riot Games and doesn't reflect the views or opinions of Riot Games or anyone officially involved in producing or managing Riot Games properties. Riot Games, and all associated properties are trademarks or registered trademarks of Riot Games, Inc.</p></div>`;
 }
-const fmtWp1 = v => (Math.abs(v) < 0.05 ? '0.0%' : `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(1)}%`);
+const fmtWp1 = fmtWp;
 
 function tabHow() {
   if (window.WP_MODEL && window.WP_MODEL.full) return tabHowTrained();

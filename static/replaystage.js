@@ -31,6 +31,10 @@ const RS = {
 const post = (path, body) => api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
 const REPLAY_SPEEDS = [0.5, 1, 2, 4, 8];
 const MAP_SPEEDS = [1, 4, 10, 20, 40, 80];
+const RS_POLL_ACTIVE_MS = 450, RS_POLL_IDLE_MS = 1500;
+const OPENING_WINDOW_MS = 120000;   // how long a replay counts as "being opened"
+const REPLAY_API_GRACE_MS = 20000;  // the Replay API answers a few seconds after the replay appears
+const SEEK_THROTTLE_MS = 300;
 
 // ---------------------------------------------------------------- state
 const rsMatchId = () => (S.game && (S.game.matchId || (S.meta && S.meta.matchId))) || null;
@@ -55,10 +59,10 @@ function rsPhase(st) {
   if (!S.game) return 'none';
   if (!st) return 'offline';
   if (st.inGame) return 'ingame';
-  const opening = RS.opening && Date.now() - RS.opening < 120000;
+  const opening = RS.opening && Date.now() - RS.opening < OPENING_WINDOW_MS;
   if (rsOurs(st)) {
     // the Replay API answers a few seconds after the replay appears: only call it "no control" if that lasts
-    if (!st.playback) return st.apiEnabled && RS.noPbSince && Date.now() - RS.noPbSince < 20000 ? 'loading' : 'nocontrol';
+    if (!st.playback) return st.apiEnabled && RS.noPbSince && Date.now() - RS.noPbSince < REPLAY_API_GRACE_MS ? 'loading' : 'nocontrol';
     return RS.stream ? 'live' : 'capture';
   }
   if (st.compatible === false) return 'old';
@@ -99,7 +103,7 @@ async function rsPoll() {
     }
     rsOnPhase(rsPhase(RS.st));
   }
-  RS.timer = setTimeout(rsPoll, rsOurs(RS.st) ? 450 : 1500);
+  RS.timer = setTimeout(rsPoll, rsOurs(RS.st) ? RS_POLL_ACTIVE_MS : RS_POLL_IDLE_MS);
 }
 
 function rsOnPhase(ph) {
@@ -163,7 +167,7 @@ function rsSeek(t) {
   RS.pending = { t, at: performance.now() };
   clearTimeout(RS.sendTimer);
   const send = () => { RS.lastSend = performance.now(); rsPlayback({ time: Math.max(0, t) }); };
-  if (performance.now() - RS.lastSend > 300) send(); else RS.sendTimer = setTimeout(send, 300);
+  if (performance.now() - RS.lastSend > SEEK_THROTTLE_MS) send(); else RS.sendTimer = setTimeout(send, SEEK_THROTTLE_MS);
 }
 function rsTogglePause() { if (RS.pb) rsPlayback({ paused: !RS.pb.paused }); }
 function rsSetSpeed(v) { rsPlayback({ speed: v }); }
