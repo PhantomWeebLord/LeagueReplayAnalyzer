@@ -184,3 +184,19 @@ test('a damaged live recording is ignored', () => {
     { ...good, snaps: good.snaps.map((s, i) => (i === 2 ? { ...s, t: 'x' } : s)) }, { ...good, snaps: good.snaps.map((s, i) => (i === 2 ? { ...s, p: s.p.map(() => null) } : s)) }];
   for (const l of bad) { const d = G('lcu'); eq(enrichWithLive(d, l), d); }
 });
+
+const MODE_MATRIX = [
+  ['Ranked Solo', 420, 11, 'CLASSIC', 'graded'], ['Ranked Flex', 440, 11, 'CLASSIC', 'graded'], ['Normal Draft', 400, 11, 'CLASSIC', 'graded'], ['Clash', 700, 11, 'CLASSIC', 'graded'],
+  ['Custom', 0, 11, 'CLASSIC', 'graded'], ['Tournament custom', 3130, 11, 'CLASSIC', 'graded'], ['Swiftplay', 480, 11, 'SWIFTPLAY', 'flagged'], ['URF', 900, 11, 'URF', 'flagged'],
+  ['One for All', 1020, 11, 'ONEFORALL', 'flagged'], ['Ultimate Spellbook', 1400, 11, 'ULTBOOK', 'flagged'], ['ARAM', 450, 12, 'ARAM', 'refused'], ['ARAM Mayhem', 2400, 12, 'KIWI', 'refused'],
+  ['Arena', 1700, 30, 'CHERRY', 'refused'], ['Swarm', 1830, 33, 'STRAWBERRY', 'refused'],
+];
+for (const [name, queue, map, mode, want] of MODE_MATRIX) test(`game mode: ${name} is ${want}`, () => {
+  const d = G('short'); Object.assign(d.match.info, { queueId: queue, mapId: map, gameMode: mode });
+  if (want === 'refused') { throws(() => buildGame(d), new RegExp(`map ${map}`)); return; }
+  const g = buildGame(d); ok(reviewGame(g).actions.length > 0); eq(analysisNotes(g).some(x => x.includes(mode)), want === 'flagged');
+});
+for (const patch of ['15.12', '16.10', '16.23']) test(`gaps and missing frames on patch ${patch}`, () => {
+  const d = G(`riot-${patch}`); frames(d).splice(9, 4); delete frames(d)[3].participantFrames; delete frames(d)[5].participantFrames['2']; frames(d)[6].events = null;
+  const g = buildGame(d); ok(g.samples.every(s => isFinite(s.control) && s.wp >= 0 && s.wp <= 1)); const R = reviewGame(g); ok(R.actions.every(a => !/undefined|NaN/.test(a.title + a.detail)));
+});
