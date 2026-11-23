@@ -33,7 +33,19 @@ MIME = {
     ".css": "text/css; charset=utf-8", ".png": "image/png", ".json": "application/json",
     ".svg": "image/svg+xml", ".ico": "image/x-icon",
 }
-OPTS = {"port": int(os.environ.get("LRA_PORT", "8766")), "browser": True, "file": None, "live": True,
+DEFAULT_PORT = 8766
+
+
+def valid_port(value, default: int) -> int:
+    """A bad port must not crash the windowed exe, which has no console to show the error."""
+    try:
+        port = int(value)
+    except (TypeError, ValueError):
+        return default
+    return port if 1 <= port <= 65535 else default
+
+
+OPTS = {"port": valid_port(os.environ.get("LRA_PORT"), DEFAULT_PORT), "browser": True, "file": None, "live": True,
         "live_url": os.environ.get("LRA_LIVE_URL", "https://127.0.0.1:2999"), "auto_exit": core.FROZEN}
 MATCH_ID_ANY_CASE = re.compile(r"[A-Za-z]+\d*_\d+")
 MATCH_ID = re.compile(r"[A-Z]+\d*_\d+")
@@ -61,11 +73,11 @@ def parse_args(argv):
     it = iter(argv)
     for a in it:
         if a == "--port":
-            OPTS["port"] = int(next(it))
+            OPTS["port"] = valid_port(next(it, None), OPTS["port"])
         elif a == "--no-browser":
             OPTS["browser"] = False
         elif a == "--live-url":
-            OPTS["live_url"] = next(it)
+            OPTS["live_url"] = next(it, OPTS["live_url"])
         elif a == "--no-live":
             OPTS["live"] = False
         elif a == "--auto-exit":

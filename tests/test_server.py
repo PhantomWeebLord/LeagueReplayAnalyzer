@@ -634,9 +634,22 @@ class LifecycleTests(SandboxTest):
         s.parse_args(["--whatever"])
         self.assertIsNone(s.OPTS["file"])
 
-    def test_parse_args_bad_port_raises(self):
-        with self.assertRaises(ValueError):
-            s.parse_args(["--port", "abc"])
+    def test_parse_args_bad_port_keeps_default(self):
+        for args in (["--port", "abc"], ["--port", "0"], ["--port", "70000"], ["--port"]):
+            with self.subTest(args=args):
+                s.OPTS["port"] = 8766
+                with contextlib.redirect_stdout(io.StringIO()):
+                    s.parse_args(args)
+                self.assertEqual(s.OPTS["port"], 8766)
+
+    def test_parse_args_missing_live_url_is_ignored(self):
+        s.parse_args(["--live-url"])
+        self.assertEqual(s.OPTS["live_url"], "https://127.0.0.1:2999")
+
+    def test_port_from_environment(self):
+        for value, want in (("9001", 9001), ("abc", s.DEFAULT_PORT), ("", s.DEFAULT_PORT), ("99999", s.DEFAULT_PORT)):
+            with self.subTest(value=value):
+                self.assertEqual(s.valid_port(value, s.DEFAULT_PORT), want)
 
     def test_app_url(self):
         self.assertEqual(s.app_url(8766), "http://127.0.0.1:8766/")
