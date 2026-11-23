@@ -1,4 +1,6 @@
 """Characterization tests for lra_live, the live game recorder."""
+import contextlib
+import io
 import json
 import threading
 import time
@@ -318,6 +320,20 @@ class RecorderTests(SandboxTest):
         rec._loop()
         self.assertIn("boom", rec.last_error)
 
+    def test_loop_logs_each_new_error_once(self):
+        rec = L.LiveRecorder("https://127.0.0.1:1")
+        rec.live_get = lambda *_a, **_k: payload(1)
+        rec._on_data = lambda _d: (_ for _ in ()).throw(RuntimeError("boom"))
+        n = [0]
+        def stop(_s):
+            n[0] += 1
+            rec.stop = n[0] >= 3
+        self.patch(time, "sleep", stop)
+        out = io.StringIO()
+        with contextlib.redirect_stderr(out):
+            rec._loop()
+        self.assertEqual(out.getvalue().count("boom"), 1)
+
     def test_loop_without_game(self):
         rec = L.LiveRecorder("https://127.0.0.1:1")
         rec.live_get = lambda *_a, **_k: (_ for _ in ()).throw(OSError("no game"))
@@ -364,6 +380,23 @@ class ResolveIdsTests(SandboxTest):
         self.patch(L, "match_history", lambda *_a: 77)
         self.rec._resolve_ids(self.sess)
         self.assertEqual(self.sess["matchId"], "NA1_77")
+
+    def test_lookup_crash_is_logged_and_retried(self):
+        calls = []
+        def flaky(*_a):
+            calls.append(1)
+            if len(calls) == 1:
+                raise ValueError("bad replay list")
+            return (66, "NA1")
+        self.patch(core, "lcu_get", lambda *_a, **_k: {})
+        self.patch(L, "match_replay", flaky)
+        self.patch(time, "sleep", lambda _s: None)
+        out = io.StringIO()
+        with contextlib.redirect_stderr(out):
+            self.rec._resolve_ids(self.sess)
+        self.assertEqual(self.sess["matchId"], "NA1_66")
+        self.assertIn("bad replay list", self.rec.last_error)
+        self.assertIn("bad replay list", out.getvalue())
 
     def test_replaced_spectate_session_stops(self):
         s = dict(self.sess, mode="spectate")
@@ -424,6 +457,11 @@ class ClientStateTests(SandboxTest):
         st = self.rec.state()
         self.assertEqual((st["status"], st["session"]["snaps"], st["last"]["t"]), ("play", 1, 10))
         self.assertNotIn("sig", st["session"])
+
+    def test_state_reports_the_last_error(self):
+        self.patch(core, "lcu_get", lambda *_a, **_k: "None")
+        self.rec.last_error = "PermissionError('busy')"
+        self.assertEqual(self.rec.state()["lastError"], "PermissionError('busy')")
 
     def test_state_in_champ_select(self):
         self.patch(core, "lcu_get", lambda *_a, **_k: "ChampSelect")

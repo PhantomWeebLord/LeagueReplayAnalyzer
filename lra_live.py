@@ -10,6 +10,7 @@ post-game debrief. While a replay is playing, the current game time is exposed s
 import json
 import re
 import ssl
+import sys
 import threading
 import time
 import urllib.request
@@ -153,8 +154,15 @@ class LiveRecorder:
                     self._on_no_game()
                     time.sleep(POLL_IDLE)
             except Exception as e:  # never let the recorder thread die
-                self.last_error = repr(e)
+                self._note_error(e)
                 time.sleep(POLL_AFTER_ERROR)
+
+    def _note_error(self, e):
+        """Keep the latest error for the status API, and write each new one to the log once."""
+        text = repr(e)
+        if text != self.last_error:
+            print(f"live recorder: {text}", file=sys.stderr, flush=True)
+        self.last_error = text
 
     def busy(self):
         """True while a game you are playing is being recorded (keeps the app alive)."""
@@ -284,7 +292,11 @@ class LiveRecorder:
         while time.time() < deadline and not self.stop:
             if s is not self.session and (s.get("gameId") or s["mode"] == "spectate"):
                 return  # replaced: a replay session nobody watches any more doesn't need an id
-            gid, plat = self._lookup_game_id(s)
+            try:
+                gid, plat = self._lookup_game_id(s)
+            except Exception as e:  # a bad file on disk must not silently end the search for this game's id
+                self._note_error(e)
+                gid, plat = None, None
             if gid:
                 plat = plat or core.lcu_platform()
                 with self.lock:
@@ -302,7 +314,7 @@ class LiveRecorder:
                 self._unsaved = None
         except OSError as e:
             self._unsaved = s
-            self.last_error = repr(e)
+            self._note_error(e)
 
     def _retry_unsaved(self):
         if self._unsaved is not None:
@@ -352,6 +364,8 @@ class LiveRecorder:
         with self.lock:
             s = self.session
             out = {"status": self.status}
+            if self.last_error:
+                out["lastError"] = self.last_error
             if s:
                 sess = {k: s.get(k) for k in ("id", "mode", "gameMode", "gameId", "matchId", "platform", "me", "players",
                                                "ended", "result", "gameTime", "startedAt", "endReason")}
