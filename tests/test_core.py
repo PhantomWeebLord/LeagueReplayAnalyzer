@@ -412,10 +412,15 @@ class GetMatchTests(SandboxTest):
 
     def fake_lcu(self, mid):
         self.lcu_calls.append(mid)
-        return {"source": "lcu", "match": {"id": mid}, "timeline": {}}
+        return self.valid("lcu", "from-client")
 
-    def cache(self, mid, data):
-        (core.CACHE / f"{mid}.json").write_text(json.dumps(data), "utf-8")
+    def valid(self, source, marker="cached", **extra):
+        g = json.loads(json.dumps(self.game))
+        g.update(source=source, marker=marker, **extra)
+        return g
+
+    def cache(self, mid, source, marker="cached", **extra):
+        (core.CACHE / f"{mid}.json").write_text(json.dumps(self.valid(source, marker, **extra)), "utf-8")
 
     def stored(self, mid):
         return json.loads((core.CACHE / f"{mid}.json").read_text("utf-8"))
@@ -429,8 +434,8 @@ class GetMatchTests(SandboxTest):
 
     def test_cached_api_game_makes_no_calls(self):
         core.save_config({"apiKey": "k"})
-        self.cache("NA1_1", {"source": "riot-api", "match": {"x": 1}})
-        self.assertEqual(core.get_match("NA1_1")["match"], {"x": 1})
+        self.cache("NA1_1", "riot-api")
+        self.assertEqual(core.get_match("NA1_1")["marker"], "cached")
         self.assertEqual((self.api_calls, self.lcu_calls), ([], []))
 
     def test_routing_by_platform(self):
@@ -453,12 +458,12 @@ class GetMatchTests(SandboxTest):
 
     def test_client_game_upgraded_when_key_exists(self):
         core.save_config({"apiKey": "k"})
-        self.cache("NA1_1", {"source": "lcu", "match": {}})
+        self.cache("NA1_1", "lcu")
         self.assertEqual(core.get_match("NA1_1")["source"], "riot-api")
 
     def test_api_missing_game_not_retried(self):
         core.save_config({"apiKey": "k"})
-        self.cache("NA1_1", {"source": "lcu", "match": {}, "apiMissing": True})
+        self.cache("NA1_1", "lcu", apiMissing=True)
         core.get_match("NA1_1")
         self.assertEqual(self.api_calls, [])
 
@@ -474,7 +479,7 @@ class GetMatchTests(SandboxTest):
 
     def test_404_on_cached_client_game_sets_missing(self):
         core.save_config({"apiKey": "k"})
-        self.cache("NA1_1", {"source": "lcu", "match": {}})
+        self.cache("NA1_1", "lcu")
         self.api_error = core.RiotError(404, "x")
         core.get_match("NA1_1")
         self.assertTrue(self.stored("NA1_1")["apiMissing"])
@@ -502,24 +507,24 @@ class GetMatchTests(SandboxTest):
 
     def test_refresh_redownloads(self):
         core.save_config({"apiKey": "k"})
-        self.cache("NA1_1", {"source": "riot-api", "match": {"old": 1}})
-        self.assertNotIn("old", core.get_match("NA1_1", refresh=True)["match"])
+        self.cache("NA1_1", "riot-api")
+        self.assertNotIn("marker", core.get_match("NA1_1", refresh=True))
 
     def test_refresh_failure_keeps_riot_data(self):
         core.save_config({"apiKey": "k"})
-        self.cache("NA1_1", {"source": "riot-api", "match": {"old": 1}})
+        self.cache("NA1_1", "riot-api")
         self.api_error = core.RiotError(500, "down")
-        self.assertEqual(core.get_match("NA1_1", refresh=True)["match"], {"old": 1})
+        self.assertEqual(core.get_match("NA1_1", refresh=True)["marker"], "cached")
         self.assertEqual(self.lcu_calls, [])
 
     def test_refresh_of_client_game_uses_client(self):
-        self.cache("NA1_1", {"source": "lcu", "match": {"old": 1}})
-        self.assertEqual(core.get_match("NA1_1", refresh=True)["match"], {"id": "NA1_1"})
+        self.cache("NA1_1", "lcu")
+        self.assertEqual(core.get_match("NA1_1", refresh=True)["marker"], "from-client")
 
     def test_refresh_client_failure_returns_cached(self):
-        self.cache("NA1_1", {"source": "lcu", "match": {"old": 1}})
+        self.cache("NA1_1", "lcu")
         self.patch(core, "lcu_match", lambda _m: (_ for _ in ()).throw(core.RiotError(503, "closed")))
-        self.assertEqual(core.get_match("NA1_1", refresh=True)["match"], {"old": 1})
+        self.assertEqual(core.get_match("NA1_1", refresh=True)["marker"], "cached")
 
     def test_damaged_cache_redownloaded(self):
         (core.CACHE / "NA1_1.json").write_text('{"source": "lcu"', "utf-8")
@@ -541,16 +546,24 @@ class GetMatchTests(SandboxTest):
         with self.assertRaisesRegex(core.RiotError, "rejected"):
             core.get_match("NA1_1")
 
-    def test_known_H5_malformed_200_is_cached(self):
+    def test_malformed_200_is_never_cached(self):
         core.save_config({"apiKey": "k"})
-        self.patch(core, "riot_get", lambda *_a: {"status": {"message": "odd"}})
-        core.get_match("NA1_1")
-        self.assertNotIn("info", self.stored("NA1_1")["match"])
+        for bad in ({"status": {"message": "odd"}}, {"info": {}}, {"info": {"participants": []}}, {"info": {"participants": [1]}}, [], None):
+            with self.subTest(bad=bad):
+                self.patch(core, "riot_get", lambda *_a: bad)
+                self.assertEqual(core.get_match("NA1_1", refresh=True)["source"], "lcu")
+                self.assertEqual(self.stored("NA1_1")["source"], "lcu")
 
-    def test_known_H9_wrong_shape_cache_crashes(self):
-        (core.CACHE / "NA1_1.json").write_text("[1, 2]", "utf-8")
-        with self.assertRaises(AttributeError):
-            core.get_match("NA1_1")
+    def test_malformed_timeline_is_never_cached(self):
+        core.save_config({"apiKey": "k"})
+        self.patch(core, "riot_get", lambda _r, path, _k: {"info": {"frames": []}} if path.endswith("/timeline") else self.game["match"])
+        self.assertEqual(core.get_match("NA1_1")["source"], "lcu")
+
+    def test_cache_of_the_wrong_shape_is_replaced(self):
+        for bad in ("[1, 2]", '{"source": "riot-api"}', '{"source": "lcu", "match": {}, "timeline": {}}', "null"):
+            with self.subTest(bad=bad):
+                (core.CACHE / "NA1_1.json").write_text(bad, "utf-8")
+                self.assertEqual(core.get_match("NA1_1")["marker"], "from-client")
 
     def test_known_M9_failed_timeline_discards_match(self):
         core.save_config({"apiKey": "k"})
@@ -559,7 +572,7 @@ class GetMatchTests(SandboxTest):
             paths.append(path)
             if path.endswith("/timeline"):
                 raise core.RiotError(500, "x")
-            return {"info": {}}
+            return self.game["match"]
         self.patch(core, "riot_get", half)
         core.get_match("NA1_1")
         core.get_match("NA1_1", refresh=True)

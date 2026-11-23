@@ -384,18 +384,39 @@ def riot_get(region: str, path: str, key: str):
 rejected_keys = set()
 
 
+def is_match_payload(m) -> bool:
+    """The parts of a Match-V5 match the analysis cannot work without."""
+    info = m.get("info") if isinstance(m, dict) else None
+    parts = info.get("participants") if isinstance(info, dict) else None
+    return isinstance(parts, list) and bool(parts) and all(isinstance(p, dict) and "participantId" in p and "teamId" in p for p in parts)
+
+
+def is_timeline_payload(t) -> bool:
+    info = t.get("info") if isinstance(t, dict) else None
+    frames = info.get("frames") if isinstance(info, dict) else None
+    return isinstance(frames, list) and bool(frames) and all(isinstance(f, dict) for f in frames)
+
+
+def is_game_data(d) -> bool:
+    return isinstance(d, dict) and is_match_payload(d.get("match")) and is_timeline_payload(d.get("timeline"))
+
+
 def _read_cached_match(path: Path):
+    """The cached game, or None if it is missing, damaged or not a complete game (it is then downloaded again)."""
     if not path.exists():
         return None
     try:
-        return json.loads(path.read_text("utf-8"))
-    except (OSError, ValueError):  # damaged cache entry: download it again
+        data = json.loads(path.read_text("utf-8"))
+    except (OSError, ValueError):
         return None
+    return data if is_game_data(data) else None
 
 
 def _fetch_riot_match(region: str, match_id: str, key: str) -> dict:
     match = riot_get(region, f"/lol/match/v5/matches/{match_id}", key)
     timeline = riot_get(region, f"/lol/match/v5/matches/{match_id}/timeline", key)
+    if not is_match_payload(match) or not is_timeline_payload(timeline):
+        raise RiotError(502, "Riot returned an unexpected response for this match.")
     return {"source": "riot-api", "match": match, "timeline": timeline}
 
 
