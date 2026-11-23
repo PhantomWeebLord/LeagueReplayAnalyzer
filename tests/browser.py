@@ -7,6 +7,7 @@
 Local replay baselines are kept in tests/.local/ (git-ignored) because they contain real match data.
 """
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -27,6 +28,7 @@ import server as s  # noqa: E402
 JS = ROOT / "tests" / "js"
 GOLDEN = ROOT / "tests" / "golden" / "synthetic.json"
 LOCAL_GOLDEN = ROOT / "tests" / ".local" / "real_golden.json"
+MATCH_FILE = re.compile(r"[A-Z0-9]+_\d+")   # the cache also holds champion tables and partial downloads
 SUITES = ["harness.js", "test_model.js", "test_review.js", "test_app.js", "test_views.js", "test_flows.js"]
 TIMEOUT = 420
 
@@ -85,7 +87,7 @@ def make_handler(games, results, opts):
             if u.path == "/__t/config":
                 golden = json.loads(GOLDEN.read_text("utf-8")) if GOLDEN.exists() else {}
                 local = json.loads(LOCAL_GOLDEN.read_text("utf-8")) if opts["real"] and LOCAL_GOLDEN.exists() else {}
-                real_ids = sorted(p.stem for p in (ROOT / "cache").glob("*_*.json")) if opts["real"] else []
+                real_ids = sorted(p.stem for p in (ROOT / "cache").glob("*_*.json") if MATCH_FILE.fullmatch(p.stem)) if opts["real"] else []
                 return self._send(json.dumps({"games": sorted(games), "golden": golden, "local": local, "realIds": real_ids, "update": opts["update"]}))
             if u.path == "/__t/real":
                 mid = q["id"][0]
