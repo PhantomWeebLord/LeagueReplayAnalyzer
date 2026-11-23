@@ -50,7 +50,7 @@ jobs:
         run: |
           Copy-Item "dist\Replay Analyzer v2.exe" "ReplayAnalyzer.exe"
           $sha = (Get-FileHash "ReplayAnalyzer.exe" -Algorithm SHA256).Hash.ToLower()
-          "$sha  ReplayAnalyzer.exe" | Out-File -FilePath "ReplayAnalyzer.exe.sha256" -Encoding ascii
+          [IO.File]::WriteAllText("$PWD\ReplayAnalyzer.exe.sha256", "$sha  ReplayAnalyzer.exe`n")  # LF, so sha256sum -c works
           $notes = (Get-Content ".github\release-notes.md" -Raw) + "`n**SHA-256:** ``$sha```n"
           Set-Content -Path "notes.md" -Value $notes -Encoding utf8
           gh release create "$env:GITHUB_REF_NAME" "ReplayAnalyzer.exe" "ReplayAnalyzer.exe.sha256" --verify-tag --title "Replay Analyzer $env:GITHUB_REF_NAME" --notes-file "notes.md"
