@@ -53,8 +53,12 @@ test('millisecond gameDuration is converted', () => { const d = G('short'); for 
 test('ARAM is rejected', () => throws(() => buildGame(G('aram')), /Only Summoner's Rift games are supported \(this game was on map 12\)/));
 test('Arena map is rejected', () => { const d = G('riot-16.23'); d.match.info.mapId = 30; throws(() => buildGame(d), /map 30/); });
 test('missing mapId is accepted', () => { const d = G('short'); delete d.match.info.mapId; ok(buildGame(d).samples.length); });
-test('known H12: URF on the Rift is graded like a normal game', () => { const d = G('short'); d.match.info.gameMode = 'URF'; d.match.info.queueId = 900; ok(reviewGame(buildGame(d)).actions.length > 0); });
-test('known M14: a future patch is analysed with no warning', () => { const d = G('short'); d.match.info.gameVersion = '99.1.1.1'; ok(reviewGame(buildGame(d)).actions.length > 0); });
+test('special modes are flagged', () => { for (const mode of ['URF', 'ONEFORALL', 'SWIFTPLAY']) { const d = G('short'); d.match.info.gameMode = mode; const n = analysisNotes(buildGame(d)); ok(n.some(x => x.includes(mode) && x.includes('rough')), mode); } });
+test('normal modes are not flagged', () => { const d = G('short'); eq(analysisNotes(buildGame(d)), []); delete d.match.info.gameMode; eq(analysisNotes(buildGame(d)), []); });
+test('patches outside the model are flagged', () => { for (const v of ['99.1.1.1', '15.12.1.1', '16.17.1.1', '16.24.1.1']) { const d = G('short'); d.match.info.gameVersion = v; const n = analysisNotes(buildGame(d)); ok(n.some(x => x.includes(v.split('.').slice(0, 2).join('.')) && x.includes('approximate')), v); } });
+test('patches inside the model are not flagged', () => { for (const v of ['16.18.1.1', '16.20.1.1', '16.23.1.1']) { const d = G('short'); d.match.info.gameVersion = v; eq(analysisNotes(buildGame(d)), [], v); } });
+test('unreadable patch is not flagged', () => { const d = G('short'); d.match.info.gameVersion = 'unknown'; eq(analysisNotes(buildGame(d)), []); });
+test('a special mode still gets a review', () => { const d = G('short'); d.match.info.gameMode = 'URF'; ok(reviewGame(buildGame(d)).actions.length > 0); });
 
 const MALFORMED = {
   'match missing': [d => { delete d.match; }, /incomplete/], 'timeline missing': [d => { delete d.timeline; }, /incomplete/], 'participants missing': [d => { delete d.match.info.participants; }, /no players/],

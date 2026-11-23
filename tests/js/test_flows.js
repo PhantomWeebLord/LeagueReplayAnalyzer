@@ -16,7 +16,7 @@ test('flow: config status shows no key', async () => { await refreshConfig(); ok
 for (const [label, re] of [['15.12', /5000000201/], ['16.10', /5000000202/], ['16.23', /5000000203/]]) {
   test(`flow: open and review a ${label} replay`, async () => {
     await openReplay(replayFor(re));
-    ok(S.game && S.review); ok(visible('app') && !visible('welcome')); ok(!visible('banner'), $('banner').textContent);
+    ok(S.game && S.review); ok(visible('app') && !visible('welcome')); eq(visible('banner'), label !== '16.23', $('banner').textContent); if (label !== '16.23') ok($('banner').textContent.includes(`patch ${label}`));
     ok($('matchTitle').textContent.includes(S.game.matchId)); ok($('tabBody').textContent.includes('Game story')); ok($('moves').querySelectorAll('.rv-move').length > 0);
   });
 }

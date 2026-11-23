@@ -180,6 +180,21 @@ function validateGameData(data) {
   if (!Array.isArray(tl.frames) || !tl.frames.some(f => f && isNum(f.timestamp))) throw new Error('The match timeline is empty.');
 }
 
+// What the player should know before trusting this review.
+const patchKey = v => { const m = String(v || '').match(/^(\d+)\.(\d+)/); return m ? +m[1] * 1000 + +m[2] : null; };
+function analysisNotes(game) {
+  const notes = [...(game.dataNotes || [])];
+  const mode = game.info.gameMode;
+  if (mode && mode !== 'CLASSIC') notes.push(`This is a ${mode} game. Grades compare it with normal Summoner's Rift games, so treat them as rough.`);
+  const trained = (typeof window !== 'undefined' && window.WP_MODEL && window.WP_MODEL.patches) || [];
+  const keys = trained.map(patchKey).filter(k => k != null), here = patchKey(game.info.gameVersion);
+  if (keys.length && here != null && (here < Math.min(...keys) || here > Math.max(...keys))) {
+    const patch = String(game.info.gameVersion).split('.').slice(0, 2).join('.');
+    notes.push(`This game is from patch ${patch}. The grades use a model trained on patches ${trained[0]}–${trained[trained.length - 1]}, so treat them as approximate.`);
+  }
+  return notes;
+}
+
 // ---------------------------------------------------------------- build
 function buildGame(data, opts) {
   validateGameData(data);
@@ -1005,7 +1020,7 @@ function playerReport(game, pid) {
 
 // exports (browser globals)
 Object.assign(window, {
-  enrichWithLive, validateGameData, CHAMP_NAMES, champName, SR, FOUNTAIN, TEAM_NAME, ENEMY, WEIGHTS, FACTOR_LABEL, ROLE_SHORT, MONSTER_NAME,
+  enrichWithLive, validateGameData, analysisNotes, CHAMP_NAMES, champName, SR, FOUNTAIN, TEAM_NAME, ENEMY, WEIGHTS, FACTOR_LABEL, ROLE_SHORT, MONSTER_NAME,
   fmtTime, fmtGold, clamp, lerp, dist, interpSeries, zoneOf, buildGame, posAt, posConfidence, isDead, levelAt, countBefore,
   structureAlive, influence, influenceAtPoint, nearbyCounts, stateAt, smoothAt, sampleIndex, wardCount, playerReport, describeFight, eventsBetween, SAMPLE_STEP,
   WP_FEATS, WP_GROUP, FACTORS, evalState, wpFeatures, wpPredict, wpWithoutDeath, wpAt, wpFor, wpModelFor, knotWeights, teamGoldAt,
