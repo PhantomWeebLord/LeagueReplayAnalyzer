@@ -246,6 +246,149 @@ class FetchToolTests(SandboxTest):
         self.assertEqual(sorted(k for k in core.PLATFORM_TO_REGION if k.lower() not in fh.REGION_OF), ["ME1", "PH2", "TH2"])
 
 
+class FetchMainTests(SandboxTest):
+    """The whole download loop, against a fake Riot API."""
+
+    def setUp(self):
+        super().setUp()
+        self.data = self.tmp / "data"
+        for k, v in (("LOG", self.tmp / "fetch.log"), ("STATE", self.tmp / "state.json"), ("ROOT", self.tmp), ("DATA", self.data)):
+            self.patch(fh, k, v)
+        (self.tmp / "config.json").write_text(json.dumps({"apiKey": "k"}), "utf-8")
+        self.patch(time, "sleep", lambda _s: None)
+        self.patch(fh, "wait_for_key", lambda *_a: None)
+        self.games = {f"NA1_{1000 + i}": fx.make_game("16.23", i + 1, minutes=16, match_id=f"NA1_{1000 + i}") for i in range(4)}
+        self.ids = {"p1": list(self.games)}
+        self.ladder = [{"puuid": "p1", "tier": "challenger"}]
+        self.patch(fh, "fetch_players", lambda *_a: list(self.ladder))
+        self.calls = []
+        self.fail_once = {}
+        self.patch(fh, "get", self.fake_get)
+
+    def fake_get(self, url, _key):
+        self.calls.append(url)
+        for marker, err in list(self.fail_once.items()):
+            if marker in url:
+                del self.fail_once[marker]
+                raise err
+        if "/by-puuid/" in url:
+            return self.ids.get(url.split("/by-puuid/")[1].split("/")[0], [])
+        mid = url.split("/matches/")[1].split("/")[0]
+        g = self.games.get(mid)
+        if not g:
+            return None
+        return g["timeline"] if url.endswith("/timeline") else g["match"]
+
+    def run_main(self, *args):
+        with mock.patch.object(sys, "argv", ["fetch", *args]), mock.patch("builtins.print"):
+            fh.main()
+
+    def saved(self):
+        return sorted(p.name[:-8] for p in self.data.glob("*.json.gz")) if self.data.exists() else []
+
+    def test_downloads_until_target(self):
+        self.run_main("--target", "2")
+        self.assertEqual(self.saved(), ["NA1_1000", "NA1_1001"])
+        with gzip.open(self.data / "NA1_1000.json.gz", "rt", encoding="utf-8") as f:
+            self.assertNotIn("fixture-puuid", f.read())
+        self.assertEqual(json.loads((self.tmp / "state.json").read_text("utf-8"))["queue"], ["NA1_1002", "NA1_1003"])
+
+    def test_skips_games_already_on_disk(self):
+        self.data.mkdir()
+        (self.data / "NA1_1000.json.gz").write_bytes(b"x")
+        self.run_main("--target", "2")
+        self.assertFalse(any("NA1_1000" in u for u in self.calls))
+
+    def test_stops_when_nothing_is_left(self):
+        self.run_main("--target", "99")
+        self.assertEqual(len(self.saved()), 4)
+
+    def test_rejects_unwanted_games(self):
+        cases = {"NA1_1000": {"mapId": 12}, "NA1_1001": {"queueId": 450}, "NA1_1002": {"gameDuration": 200}, "NA1_1003": {"gameVersion": "15.12.1.1"}}
+        for mid, change in cases.items():
+            self.games[mid]["match"]["info"].update(change)
+        self.run_main("--target", "9")
+        self.assertEqual(self.saved(), [])
+        self.assertEqual(sorted(json.loads((self.tmp / "state.json").read_text("utf-8"))["skipped"]), sorted(cases))
+
+    def test_missing_timeline_is_skipped(self):
+        self.games["NA1_1000"]["timeline"] = {}
+        self.run_main("--target", "9")
+        self.assertNotIn("NA1_1000", self.saved())
+
+    def test_transient_failure_retries_game_later(self):
+        self.fail_once["/matches/NA1_1000"] = fh.Transient("x")
+        self.run_main("--target", "4")
+        self.assertEqual(len(self.saved()), 4)
+
+    def test_transient_timeline_failure_retries(self):
+        self.fail_once["NA1_1000/timeline"] = fh.Transient("x")
+        self.run_main("--target", "4")
+        self.assertIn("NA1_1000", self.saved())
+
+    def test_expired_key_saves_state_and_exits(self):
+        self.fail_once["/matches/NA1_1001"] = fh.KeyExpired("401")
+        with self.assertRaises(SystemExit) as c:
+            self.run_main("--target", "4")
+        self.assertEqual(c.exception.code, 2)
+        self.assertEqual(json.loads((self.tmp / "state.json").read_text("utf-8"))["queue"][0], "NA1_1001")
+
+    def test_interrupt_saves_state(self):
+        self.fail_once["/matches/NA1_1001"] = KeyboardInterrupt()
+        self.run_main("--target", "4")
+        self.assertEqual(json.loads((self.tmp / "state.json").read_text("utf-8"))["queue"][0], "NA1_1001")
+
+    def test_stale_player_ids_refresh_the_ladder(self):
+        refreshed = []
+        self.ladder = [{"puuid": f"old{i}", "tier": "master"} for i in range(5)]
+        def ladder(*_a):
+            refreshed.append(1)
+            return [{"puuid": "p1", "tier": "master"}] if len(refreshed) > 1 else list(self.ladder)
+        self.patch(fh, "fetch_players", ladder)
+        real = self.fake_get
+        def bad(url, key):
+            if "/by-puuid/old" in url:
+                self.calls.append(url)
+                raise fh.BadPlayerId(url)
+            return real(url, key)
+        self.patch(fh, "get", bad)
+        self.run_main("--target", "1")
+        self.assertEqual(len(refreshed), 2)
+        self.assertEqual(len(self.saved()), 1)
+
+    def test_transient_player_failure_moves_on(self):
+        self.ladder = [{"puuid": "gone", "tier": "master"}, {"puuid": "p1", "tier": "master"}]
+        self.fail_once["/by-puuid/gone"] = fh.Transient("x")
+        self.run_main("--target", "1")
+        self.assertEqual(len(self.saved()), 1)
+
+    def test_old_summoner_id_entries(self):
+        self.ladder = [{"summonerId": "s1", "tier": "master"}, {"tier": "master"}]
+        real = self.fake_get
+        self.patch(fh, "get", lambda url, key: {"puuid": "p1"} if "/summoners/" in url else real(url, key))
+        self.run_main("--target", "1")
+        self.assertEqual(len(self.saved()), 1)
+
+    def test_refresh_players_flag(self):
+        fh.save_state({"players": [{"puuid": "p1"}], "playerIdx": 1, "queue": [], "skipped": []})
+        calls = []
+        self.patch(fh, "fetch_players", lambda *_a: calls.append(1) or list(self.ladder))
+        self.run_main("--target", "1", "--refresh-players")
+        self.assertEqual(calls, [1])
+
+    def test_platform_routing(self):
+        self.ids = {"p1": []}
+        self.run_main("--target", "1", "--platform", "euw1")
+        self.assertTrue(any(u.startswith("https://europe.api.riotgames.com") for u in self.calls))
+
+    def test_request_window_arguments(self):
+        self.run_main("--target", "1", "--per-player", "7", "--days", "1")
+        q = next(u for u in self.calls if "/by-puuid/" in u)
+        self.assertIn("count=7", q)
+        self.assertIn("queue=420", q)
+        self.assertIn("type=ranked", q)
+
+
 class TrainServerTests(SandboxTest):
     def setUp(self):
         super().setUp()
@@ -276,7 +419,7 @@ class TrainServerTests(SandboxTest):
 
     def test_foreign_host_blocked(self):
         self.assertEqual(self.req("GET", "/api/list", headers={"Host": "evil.example"})[0], 403)
-        self.assertEqual(self.req("POST", "/api/save?name=x", body=b"1", headers={"Origin": "https://evil.example"})[0], 403)
+        self.assertEqual(self.req("POST", "/api/save?name=x", headers={"Origin": "https://evil.example", "Content-Length": "0"})[0], 403)
 
     def test_list_and_game(self):
         with gzip.open(self.data / "NA1_123456.json.gz", "wt") as f:

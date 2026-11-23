@@ -105,7 +105,7 @@ class GuardTests(ServerCase):
     def test_foreign_origin_blocked(self):
         for m in ("GET", "POST"):
             with self.subTest(method=m):
-                self.assertEqual(self.req(m, "/api/config", headers={"Origin": "https://evil.example", "Content-Type": "application/json"}, body="{}")[0], 403)
+                self.assertEqual(self.req(m, "/api/config", headers={"Origin": "https://evil.example", "Content-Type": "application/json", "Content-Length": "0"})[0], 403)
 
     def test_own_origin_allowed(self):
         self.assertEqual(self.req("GET", "/api/ping", headers={"Origin": f"http://127.0.0.1:{self.port}"})[0], 200)

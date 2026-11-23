@@ -34,6 +34,17 @@ MIME = {
 }
 OPTS = {"port": int(os.environ.get("LRA_PORT", "8766")), "browser": True, "file": None, "live": True,
         "live_url": os.environ.get("LRA_LIVE_URL", "https://127.0.0.1:2999"), "auto_exit": core.FROZEN}
+MATCH_ID_ANY_CASE = re.compile(r"[A-Za-z]+\d*_\d+")
+MATCH_ID = re.compile(r"[A-Z]+\d*_\d+")
+MIN_REPLAY_SPEED, MAX_REPLAY_SPEED = 0.125, 16.0
+SAFE_CAMERA_MODES = (None, "top")    # third-person / free-fly modes crashed League's replay player in testing
+LISTEN_BACKLOG = 128
+PORT_SEARCH_RANGE = 10
+STATUS_CACHE_SECONDS = 2.5
+CLOSE_POLLS, CLOSE_POLL_SECONDS = 12, 0.25
+WATCHDOG_TICK = 10
+EXIT_AFTER_CLOSE = 25                # seconds after the window closes (a reload pings again within this time)
+EXIT_WHEN_IDLE = 6 * 3600
 RECORDER = None
 LAST_PING = [time.time()]
 BYE_AT = [None]
@@ -96,98 +107,197 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
+    def _arg(self, key, default=""):
+        return (self.query.get(key) or [default])[0]
+
+    # ------------------------------------------------ GET routes
+    def _get_ping(self):
+        LAST_PING[0] = time.time()
+        return self.send_json({"app": APP_ID, "version": VERSION, "frozen": core.FROZEN})
+
+    def _get_replays(self):
+        return self.send_json(core.list_replays())
+
+    def _get_config(self):
+        cfg = core.load_config()
+        k = cfg.get("apiKey") or ""
+        return self.send_json({"hasKey": bool(k), "keyHint": (k[:6] + "…" + k[-4:]) if k else "",
+                               "replayDir": str(core.replay_dir()), "lcu": bool(core.find_lockfile()),
+                               "keyRejected": bool(k) and k in core.rejected_keys, "dataDir": str(core.DATA),
+                               "frozen": core.FROZEN, "live": bool(RECORDER), "version": VERSION})
+
+    def _get_champions(self):
+        return self.send_json({c["id"]: c["name"] for c in core.champion_table()})
+
+    def _get_me(self):
+        try:
+            me = core.lcu_get("/lol-summoner/v1/current-summoner", timeout=5)
+            return self.send_json({"gameName": me.get("gameName"), "tagLine": me.get("tagLine"), "puuid": me.get("puuid")})
+        except RiotError as e:
+            return self.send_json({"error": str(e)})
+
+    def _get_match(self):
+        mid = self._arg("id")
+        if not MATCH_ID_ANY_CASE.fullmatch(mid):
+            return self.send_json({"error": "Bad match id"}, 400)
+        try:
+            return self.send_json(core.get_match(mid.upper(), self._arg("refresh") == "1"))
+        except RiotError as e:
+            return self.send_json({"error": str(e), "status": e.status})
+
+    def _get_replay_file(self):
+        """Open a .rofl from anywhere on disk (drag & drop onto the exe, "open with")."""
+        p = Path(self._arg("path"))
+        if p.suffix.lower() != ".rofl" or not p.is_file():
+            return self.send_json({"error": "Not a .rofl file"}, 400)
+        try:
+            meta = core.parse_rofl(p)
+            meta["path"] = str(p)
+            return self.send_json(meta)
+        except Exception as e:
+            return self.send_json({"error": f"Could not read this replay: {e}"})
+
+    def _get_live_state(self):
+        return self.send_json(RECORDER.state() if RECORDER else {"status": "disabled"})
+
+    def _get_live_sessions(self):
+        return self.send_json(RECORDER.sessions() if RECORDER else [])
+
+    def _get_live_session(self):
+        s = RECORDER.session_file(self._arg("id")) if RECORDER else None
+        return self.send_json(s if s else {"error": "not found"}, 200 if s else 404)
+
+    def _get_playback(self):
+        try:
+            return self.send_json(RECORDER.live_get("/replay/playback", timeout=1.5))
+        except Exception:
+            return self.send_json({"error": "Replay control is not available", "enabledInConfig": core.replay_api_enabled()})
+
+    def _get_replay_status(self):
+        return self.send_json(replay_status(self._arg("matchId").upper(), self._arg("version")))
+
+    def _get_render(self):
+        try:
+            return self.send_json(RECORDER.live_get("/replay/render", timeout=1.5))
+        except Exception:
+            return self.send_json({"error": "Replay control is not available"})
+
+    def _get_replay_players(self):
+        """In-replay player names: the Replay API selects a player by this name."""
+        try:
+            pl = RECORDER.live_get("/liveclientdata/playerlist", timeout=2)
+            return self.send_json([{"name": p.get("riotIdGameName") or (p.get("summonerName") or "").split("#")[0],
+                                    "champ": str(p.get("rawChampionName") or "").replace("game_character_displayname_", ""),
+                                    "champName": p.get("championName"), "team": 100 if p.get("team") == "ORDER" else 200}
+                                   for p in pl or []])
+        except Exception:
+            return self.send_json({"error": "No replay running"})
+
+    def _get_asset(self, path):
+        parts = path.split("/")
+        kind = parts[2] if len(parts) > 2 else ""
+        name = urllib.parse.unquote(parts[3]).rsplit(".", 1)[0] if len(parts) > 3 else ""
+        b = core.get_asset(kind, name)
+        return self.send_bytes(b, "image/png", cache=True) if b is not None else self.send_empty(404)
+
+    def _get_static(self, path):
+        rel = "index.html" if path in ("/", "") else path.lstrip("/")
+        fp = (core.STATIC / rel).resolve()
+        if core.STATIC.resolve() not in fp.parents or not fp.is_file():
+            return self.send_empty(404)
+        return self.send_bytes(fp.read_bytes(), MIME.get(fp.suffix, "application/octet-stream"))
+
+    GET_ROUTES = {
+        "/api/ping": _get_ping, "/api/replays": _get_replays, "/api/config": _get_config, "/api/champions": _get_champions, "/api/me": _get_me,
+        "/api/match": _get_match, "/api/replay-file": _get_replay_file, "/api/live/state": _get_live_state, "/api/live/sessions": _get_live_sessions,
+        "/api/live/session": _get_live_session, "/api/replay/playback": _get_playback, "/api/replay/status": _get_replay_status,
+        "/api/replay/render": _get_render, "/api/replay/players": _get_replay_players,
+    }
+
     def do_GET(self):
         if not self._local_ok():
             return self.send_json({"error": "forbidden"}, 403)
         u = urllib.parse.urlparse(self.path)
-        q = urllib.parse.parse_qs(u.query)
-        arg = lambda k, d="": (q.get(k) or [d])[0]
-        path = u.path
+        self.query = urllib.parse.parse_qs(u.query)
         try:
-            if path == "/api/ping":
-                LAST_PING[0] = time.time()
-                return self.send_json({"app": APP_ID, "version": VERSION, "frozen": core.FROZEN})
-            if path == "/api/replays":
-                return self.send_json(core.list_replays())
-            if path == "/api/config":
-                cfg = core.load_config()
-                k = cfg.get("apiKey") or ""
-                return self.send_json({"hasKey": bool(k), "keyHint": (k[:6] + "…" + k[-4:]) if k else "",
-                                       "replayDir": str(core.replay_dir()), "lcu": bool(core.find_lockfile()),
-                                       "keyRejected": bool(k) and k in core.rejected_keys, "dataDir": str(core.DATA),
-                                       "frozen": core.FROZEN, "live": bool(RECORDER), "version": VERSION})
-            if path == "/api/champions":
-                return self.send_json({c["id"]: c["name"] for c in core.champion_table()})
-            if path == "/api/me":
-                try:
-                    me = core.lcu_get("/lol-summoner/v1/current-summoner", timeout=5)
-                    return self.send_json({"gameName": me.get("gameName"), "tagLine": me.get("tagLine"), "puuid": me.get("puuid")})
-                except RiotError as e:
-                    return self.send_json({"error": str(e)})
-            if path == "/api/match":
-                mid = arg("id")
-                if not re.fullmatch(r"[A-Za-z]+\d*_\d+", mid):
-                    return self.send_json({"error": "Bad match id"}, 400)
-                try:
-                    return self.send_json(core.get_match(mid.upper(), arg("refresh") == "1"))
-                except RiotError as e:
-                    return self.send_json({"error": str(e), "status": e.status})
-            if path == "/api/replay-file":
-                # open a .rofl from anywhere on disk (drag & drop onto the exe, "open with")
-                p = Path(arg("path"))
-                if p.suffix.lower() != ".rofl" or not p.is_file():
-                    return self.send_json({"error": "Not a .rofl file"}, 400)
-                try:
-                    meta = core.parse_rofl(p)
-                    meta["path"] = str(p)
-                    return self.send_json(meta)
-                except Exception as e:
-                    return self.send_json({"error": f"Could not read this replay: {e}"})
-            if path == "/api/live/state":
-                if not RECORDER:
-                    return self.send_json({"status": "disabled"})
-                return self.send_json(RECORDER.state())
-            if path == "/api/live/sessions":
-                return self.send_json(RECORDER.sessions() if RECORDER else [])
-            if path == "/api/live/session":
-                s = RECORDER.session_file(arg("id")) if RECORDER else None
-                return self.send_json(s if s else {"error": "not found"}, 200 if s else 404)
-            if path == "/api/replay/playback":
-                try:
-                    return self.send_json(RECORDER.live_get("/replay/playback", timeout=1.5))
-                except Exception:
-                    return self.send_json({"error": "Replay control is not available", "enabledInConfig": core.replay_api_enabled()})
-            if path == "/api/replay/status":
-                return self.send_json(replay_status(arg("matchId").upper(), arg("version")))
-            if path == "/api/replay/render":
-                try:
-                    return self.send_json(RECORDER.live_get("/replay/render", timeout=1.5))
-                except Exception:
-                    return self.send_json({"error": "Replay control is not available"})
-            if path == "/api/replay/players":
-                # in-replay player names: the Replay API selects a player by this name
-                try:
-                    pl = RECORDER.live_get("/liveclientdata/playerlist", timeout=2)
-                    return self.send_json([{"name": p.get("riotIdGameName") or (p.get("summonerName") or "").split("#")[0],
-                                            "champ": str(p.get("rawChampionName") or "").replace("game_character_displayname_", ""),
-                                            "champName": p.get("championName"), "team": 100 if p.get("team") == "ORDER" else 200}
-                                           for p in pl or []])
-                except Exception:
-                    return self.send_json({"error": "No replay running"})
-            if path.startswith("/asset/"):
-                parts = path.split("/")
-                kind = parts[2] if len(parts) > 2 else ""
-                name = urllib.parse.unquote(parts[3]).rsplit(".", 1)[0] if len(parts) > 3 else ""
-                b = core.get_asset(kind, name)
-                return self.send_bytes(b, "image/png", cache=True) if b is not None else self.send_empty(404)
-            # static files
-            rel = "index.html" if path in ("/", "") else path.lstrip("/")
-            fp = (core.STATIC / rel).resolve()
-            if core.STATIC.resolve() not in fp.parents or not fp.is_file():
-                return self.send_empty(404)
-            return self.send_bytes(fp.read_bytes(), MIME.get(fp.suffix, "application/octet-stream"))
+            route = self.GET_ROUTES.get(u.path)
+            if route:
+                return route(self)
+            if u.path.startswith("/asset/"):
+                return self._get_asset(u.path)
+            return self._get_static(u.path)
         except Exception as e:
             return self.send_json({"error": f"{type(e).__name__}: {e}"}, 500)
+
+    # ------------------------------------------------ POST routes
+    def _post_config(self, data):
+        cfg = core.load_config()
+        if "apiKey" in data:
+            cfg["apiKey"] = str(data["apiKey"]).strip()
+            core.rejected_keys.discard(cfg["apiKey"])
+        if "replayDir" in data:
+            cfg["replayDir"] = str(data["replayDir"]).strip()
+        core.save_config(cfg)
+        return self.send_json({"ok": True})
+
+    def _post_render(self, data):
+        body = {k: data[k] for k in RENDER_KEYS if k in data}
+        if body.get("cameraMode") not in SAFE_CAMERA_MODES:
+            body.pop("cameraMode")
+        try:
+            return self.send_json(RECORDER.live_post("/replay/render", body))
+        except Exception as e:
+            return self.send_json({"error": f"Replay control is not available ({e})"})
+
+    def _post_window(self, data):
+        return self.send_json({"ok": core.arrange_windows(str(data.get("action")), APP_TITLE)})
+
+    def _post_start_client(self, _data):
+        try:
+            return self.send_json({"ok": core.start_league_client()})
+        except RiotError as e:
+            return self.send_json({"error": str(e)})
+
+    def _post_close(self, _data):
+        return self.send_json(close_replay())
+
+    def _post_playback(self, data):
+        body = {}
+        try:
+            if "time" in data:
+                body["time"] = max(0.0, float(data["time"]))
+            if "speed" in data:
+                body["speed"] = min(MAX_REPLAY_SPEED, max(MIN_REPLAY_SPEED, float(data["speed"])))
+            if "paused" in data:
+                body["paused"] = bool(data["paused"])
+        except (TypeError, ValueError):
+            return self.send_json({"error": "Bad playback values"}, 400)
+        try:
+            return self.send_json(RECORDER.live_post("/replay/playback", body))
+        except Exception as e:
+            return self.send_json({"error": f"Replay control is not available ({e})", "enabledInConfig": core.replay_api_enabled()})
+
+    def _post_watch(self, data):
+        mid = str(data.get("matchId") or "").upper()
+        if not MATCH_ID.fullmatch(mid):
+            return self.send_json({"error": "Bad match id"}, 400)
+        try:
+            core.watch_replay(mid, data.get("path"))
+            return self.send_json({"ok": True})
+        except (RiotError, OSError) as e:
+            return self.send_json({"error": f"Could not start the replay in League: {e}"})
+
+    def _post_enable_api(self, _data):
+        try:
+            core.enable_replay_api()
+            return self.send_json({"ok": True})
+        except (RiotError, OSError) as e:
+            return self.send_json({"error": str(e)})
+
+    POST_ROUTES = {
+        "/api/config": _post_config, "/api/replay/render": _post_render, "/api/replay/window": _post_window, "/api/replay/start-client": _post_start_client,
+        "/api/replay/close": _post_close, "/api/replay/playback": _post_playback, "/api/replay/watch": _post_watch, "/api/replay/enable-api": _post_enable_api,
+    }
 
     def do_POST(self):
         if not self._local_ok():
@@ -205,63 +315,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"error": "JSON body required"}, 415)
         try:
             data = json.loads(body or b"{}")
-            if u.path == "/api/config":
-                cfg = core.load_config()
-                if "apiKey" in data:
-                    cfg["apiKey"] = str(data["apiKey"]).strip()
-                    core.rejected_keys.discard(cfg["apiKey"])
-                if "replayDir" in data:
-                    cfg["replayDir"] = str(data["replayDir"]).strip()
-                core.save_config(cfg)
-                return self.send_json({"ok": True})
-            if u.path == "/api/replay/render":
-                body = {k: data[k] for k in RENDER_KEYS if k in data}
-                if body.get("cameraMode") not in (None, "top"):
-                    body.pop("cameraMode")  # third-person / free-fly modes crashed League's replay player in testing
-                try:
-                    return self.send_json(RECORDER.live_post("/replay/render", body))
-                except Exception as e:
-                    return self.send_json({"error": f"Replay control is not available ({e})"})
-            if u.path == "/api/replay/window":
-                return self.send_json({"ok": core.arrange_windows(str(data.get("action")), APP_TITLE)})
-            if u.path == "/api/replay/start-client":
-                try:
-                    return self.send_json({"ok": core.start_league_client()})
-                except RiotError as e:
-                    return self.send_json({"error": str(e)})
-            if u.path == "/api/replay/close":
-                return self.send_json(close_replay())
-            if u.path == "/api/replay/playback":
-                body = {}
-                try:
-                    if "time" in data:
-                        body["time"] = max(0.0, float(data["time"]))
-                    if "speed" in data:
-                        body["speed"] = min(16.0, max(0.125, float(data["speed"])))
-                    if "paused" in data:
-                        body["paused"] = bool(data["paused"])
-                except (TypeError, ValueError):
-                    return self.send_json({"error": "Bad playback values"}, 400)
-                try:
-                    return self.send_json(RECORDER.live_post("/replay/playback", body))
-                except Exception as e:
-                    return self.send_json({"error": f"Replay control is not available ({e})", "enabledInConfig": core.replay_api_enabled()})
-            if u.path == "/api/replay/watch":
-                mid = str(data.get("matchId") or "").upper()
-                if not re.fullmatch(r"[A-Z]+\d*_\d+", mid):
-                    return self.send_json({"error": "Bad match id"}, 400)
-                try:
-                    core.watch_replay(mid, data.get("path"))
-                    return self.send_json({"ok": True})
-                except (RiotError, OSError) as e:
-                    return self.send_json({"error": f"Could not start the replay in League: {e}"})
-            if u.path == "/api/replay/enable-api":
-                try:
-                    core.enable_replay_api()
-                    return self.send_json({"ok": True})
-                except (RiotError, OSError) as e:
-                    return self.send_json({"error": str(e)})
-            return self.send_json({"error": "not found"}, 404)
+            route = self.POST_ROUTES.get(u.path)
+            return route(self, data) if route else self.send_json({"error": "not found"}, 404)
         except Exception as e:
             return self.send_json({"error": f"{type(e).__name__}: {e}"}, 500)
 
@@ -300,12 +355,12 @@ def replay_status(match_id, version):
     out["clientPatch"] = cp or core.installed_game_patch()  # the game's own version works with the client closed
     cp = out["clientPatch"]
     rp = core.patch_of(version)
-    if not rp and re.fullmatch(r"[A-Z]+\d*_\d+", match_id or ""):
+    if not rp and MATCH_ID.fullmatch(match_id or ""):
         rp = replay_patch_for(match_id)
     out["replayPatch"] = rp
     out["compatible"] = (rp == cp) if (rp and cp) else None
     now = time.time()
-    if lcu and now - _status_cache["at"] > 2.5:
+    if lcu and now - _status_cache["at"] > STATUS_CACHE_SECONDS:
         try:
             _status_cache["cfg"] = core.lcu_get("/lol-replays/v1/configuration", timeout=3)
         except RiotError:
@@ -347,8 +402,8 @@ def close_replay():
         return {"error": "Could not identify League's replay window - close it in League."}  # never touch anything else
     try:
         subprocess.run(["taskkill", "/PID", str(pid)], capture_output=True, timeout=10)
-        for _ in range(12):  # give League a moment to close itself, then force it (it's only a replay)
-            time.sleep(0.25)
+        for _ in range(CLOSE_POLLS):  # give League a moment to close itself, then force it (it's only a replay)
+            time.sleep(CLOSE_POLL_SECONDS)
             if not core.find_window(core.LEAGUE_WINDOW):
                 return {"ok": True}
         subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True, timeout=10)
@@ -361,7 +416,7 @@ def close_replay():
 class AppServer(ThreadingHTTPServer):
     # Python's default listen backlog is 5. On Windows a page load (about ten scripts, styles and API calls at
     # once) overflows it and the extra connections are reset, so parts of the app silently failed to load.
-    request_queue_size = 128
+    request_queue_size = LISTEN_BACKLOG
     daemon_threads = True
 
 
@@ -412,14 +467,14 @@ def open_window(url):
 def watchdog():
     """Packaged app: quit after its window has been closed - but never while a live game is being recorded."""
     while True:
-        time.sleep(10)
+        time.sleep(WATCHDOG_TICK)
         now = time.time()
         if RECORDER is not None and RECORDER.busy():
             continue
         bye = BYE_AT[0]
-        if bye and now - bye > 25 and LAST_PING[0] < bye:
+        if bye and now - bye > EXIT_AFTER_CLOSE and LAST_PING[0] < bye:
             os._exit(0)
-        if now - LAST_PING[0] > 6 * 3600:
+        if now - LAST_PING[0] > EXIT_WHEN_IDLE:
             os._exit(0)
 
 
@@ -434,7 +489,7 @@ def main():
         open_window(app_url(port, OPTS["file"]))
         return
     srv = None
-    for p in range(port, port + 10):
+    for p in range(port, port + PORT_SEARCH_RANGE):
         try:
             srv = AppServer(("127.0.0.1", p), Handler)
             OPTS["port"] = p
