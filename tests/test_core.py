@@ -21,6 +21,8 @@ REAL_USER32 = core._user32
 
 
 class Resp:
+    headers = {}
+
     def __init__(self, body=b"", read_error=None):
         self.body = body.encode() if isinstance(body, str) else body
         self.read_error = read_error
@@ -264,6 +266,11 @@ class ListReplaysTests(SandboxTest):
 
 
 class RiotGetTests(SandboxTest):
+    def setUp(self):
+        super().setUp()
+        self.sleeps = []
+        self.patch(time, "sleep", self.sleeps.append)
+
     def test_request_and_response(self):
         seen = {}
         def fake(req, timeout=None, context=None):
@@ -307,15 +314,84 @@ class RiotGetTests(SandboxTest):
             core.riot_get("americas", "/x", "k")
         self.assertEqual(c.exception.status, 502)
 
-    def test_known_H6_429_is_not_retried(self):
+    def sequence(self, *steps):
         calls = []
         def fake(req, **_k):
+            step = steps[min(len(calls), len(steps) - 1)]
             calls.append(1)
-            raise http_error(req.full_url, 429)
+            if isinstance(step, int):
+                raise urllib.error.HTTPError(req.full_url, step, "e", {"Retry-After": "3"} if step == 429 else {}, io.BytesIO(b""))
+            if isinstance(step, Exception):
+                raise step
+            return Resp(step)
         self.patch(urllib.request, "urlopen", fake)
-        with self.assertRaises(core.RiotError):
+        return calls
+
+    def test_429_honours_retry_after(self):
+        calls = self.sequence(429, '{"ok": 1}')
+        self.assertEqual(core.riot_get("americas", "/x", "k"), {"ok": 1})
+        self.assertEqual((len(calls), self.sleeps), (2, [3.0]))
+
+    def test_server_errors_back_off_exponentially(self):
+        calls = self.sequence(500, 503, 504, '{"ok": 1}')
+        self.assertEqual(core.riot_get("americas", "/x", "k"), {"ok": 1})
+        self.assertEqual((len(calls), self.sleeps), (4, [1.0, 2.0, 4.0]))
+
+    def test_network_errors_are_retried(self):
+        calls = self.sequence(urllib.error.URLError("dns"), '{"ok": 1}')
+        self.assertEqual(core.riot_get("americas", "/x", "k"), {"ok": 1})
+        self.assertEqual(len(calls), 2)
+
+    def test_gives_up_after_limited_attempts(self):
+        calls = self.sequence(503)
+        with self.assertRaises(core.RiotError) as c:
             core.riot_get("americas", "/x", "k")
-        self.assertEqual(len(calls), 1)
+        self.assertEqual((c.exception.status, len(calls)), (503, core.RIOT_MAX_ATTEMPTS))
+
+    def test_long_retry_after_is_not_waited_for(self):
+        def fake(req, **_k):
+            raise urllib.error.HTTPError(req.full_url, 429, "e", {"Retry-After": "900"}, io.BytesIO(b""))
+        self.patch(urllib.request, "urlopen", fake)
+        with self.assertRaises(core.RiotError) as c:
+            core.riot_get("americas", "/x", "k")
+        self.assertEqual((c.exception.status, self.sleeps), (429, []))
+
+    def test_client_errors_are_not_retried(self):
+        for code in (400, 401, 403, 404):
+            with self.subTest(code=code):
+                calls = self.sequence(code)
+                with self.assertRaises(core.RiotError):
+                    core.riot_get("americas", "/x", "k")
+                self.assertEqual(len(calls), 1)
+
+    def test_rate_limit_comes_from_riot_headers(self):
+        class R(Resp):
+            headers = {"X-App-Rate-Limit": "10:1,50:60"}
+        self.patch(urllib.request, "urlopen", lambda *_a, **_k: R("{}"))
+        core.riot_get("americas", "/x", "k")
+        self.assertEqual(core.RIOT_LIMITER.windows, [(9, 1.0), (47, 60.0)])
+
+    def test_limiter_spaces_out_calls(self):
+        clock = [100.0]
+        self.patch(time, "monotonic", lambda: clock[0])
+        self.patch(time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
+        lim = core.RateLimiter([(2, 10.0)])
+        for _ in range(3):
+            self.assertTrue(lim.acquire(30))
+        self.assertGreaterEqual(clock[0], 110.0)
+
+    def test_limiter_refuses_a_long_wait(self):
+        clock = [100.0]
+        self.patch(time, "monotonic", lambda: clock[0])
+        lim = core.RateLimiter([(1, 100.0)])
+        self.assertTrue(lim.acquire(5))
+        self.assertFalse(lim.acquire(5))
+
+    def test_limiter_ignores_bad_headers(self):
+        lim = core.RateLimiter([(5, 1.0)])
+        for bad in (None, "", "garbage", "5:x"):
+            lim.update(bad)
+        self.assertEqual(lim.windows, [(5, 1.0)])
 
 
 class GetMatchTests(SandboxTest):

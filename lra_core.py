@@ -2,6 +2,7 @@
 League Replay Analyzer - core: paths, config, .rofl parsing, Riot API, League client (LCU), Data Dragon assets.
 """
 import base64
+import collections
 import http.client
 import json
 import os
@@ -276,9 +277,63 @@ def list_replays():
 
 # ---------------------------------------------------------------- Riot API
 class RiotError(Exception):
-    def __init__(self, status, msg):
+    def __init__(self, status, msg, retry_after=None):
         super().__init__(msg)
         self.status = status
+        self.retry_after = retry_after
+
+
+RIOT_DEV_KEY_LIMITS = ((20, 1.0), (100, 120.0))
+RIOT_MAX_ATTEMPTS = 4
+RIOT_BACKOFF_SECONDS = 1.0
+RIOT_MAX_WAIT_SECONDS = 20      # longer than this, fall back to the League client rather than freeze the page
+RIOT_RETRY_STATUSES = {429, 500, 502, 503, 504}
+
+
+class RateLimiter:
+    """Sliding-window limiter shared by all Riot API calls; updated from Riot's X-App-Rate-Limit header."""
+
+    def __init__(self, windows=RIOT_DEV_KEY_LIMITS):
+        self.windows = list(windows)
+        self.calls = collections.deque()
+        self.lock = threading.Lock()
+
+    def update(self, header):
+        try:
+            limits = [part.split(":") for part in header.split(",")]
+            parsed = [(max(1, int(int(n) * 0.95)), float(s)) for n, s in limits]
+        except (AttributeError, ValueError):
+            return
+        with self.lock:
+            self.windows = parsed
+
+    def _wait_needed(self, now):
+        longest = max(s for _, s in self.windows)
+        while self.calls and now - self.calls[0] > longest:
+            self.calls.popleft()
+        wait = 0.0
+        for n, s in self.windows:
+            inside = [t for t in self.calls if now - t < s]
+            if len(inside) >= n:
+                wait = max(wait, s - (now - inside[-n]))
+        return wait
+
+    def acquire(self, max_wait: float) -> bool:
+        """Take a slot, waiting if needed. False if that would take longer than max_wait."""
+        deadline = time.monotonic() + max_wait
+        while True:
+            with self.lock:
+                now = time.monotonic()
+                wait = self._wait_needed(now)
+                if wait <= 0:
+                    self.calls.append(now)
+                    return True
+            if now + wait > deadline:
+                return False
+            time.sleep(wait)
+
+
+RIOT_LIMITER = RateLimiter()
 
 
 RIOT_ERROR_HINTS = {
@@ -289,19 +344,41 @@ RIOT_ERROR_HINTS = {
 }
 
 
-def riot_get(region: str, path: str, key: str):
-    url = RIOT_API_BASE.format(region=region) + path
+def _retry_after(headers):
+    try:
+        return float(headers.get("Retry-After"))
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def _riot_request(url: str, key: str):
     req = urllib.request.Request(url, headers={"X-Riot-Token": key, "User-Agent": USER_AGENT})
     try:
         with urllib.request.urlopen(req, timeout=RIOT_TIMEOUT, context=ssl.create_default_context()) as r:
+            RIOT_LIMITER.update(r.headers.get("X-App-Rate-Limit"))
             return json.loads(r.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", "replace")[:300]
-        raise RiotError(e.code, RIOT_ERROR_HINTS.get(e.code, body))
+        raise RiotError(e.code, RIOT_ERROR_HINTS.get(e.code, body), _retry_after(e.headers))
     except urllib.error.URLError as e:
         raise RiotError(502, f"Could not reach Riot API: {e.reason}")
     except (TimeoutError, ConnectionError, ValueError, http.client.HTTPException) as e:  # slow or cut-off response
         raise RiotError(502, f"Could not read Riot's response: {e}")
+
+
+def riot_get(region: str, path: str, key: str):
+    """GET from the Riot API with rate limiting, and exponential backoff on rate limits and server errors."""
+    url = RIOT_API_BASE.format(region=region) + path
+    for attempt in range(RIOT_MAX_ATTEMPTS):
+        if not RIOT_LIMITER.acquire(RIOT_MAX_WAIT_SECONDS):
+            raise RiotError(429, RIOT_ERROR_HINTS[429])
+        try:
+            return _riot_request(url, key)
+        except RiotError as e:
+            wait = e.retry_after if e.retry_after is not None else RIOT_BACKOFF_SECONDS * 2 ** attempt
+            if e.status not in RIOT_RETRY_STATUSES or attempt == RIOT_MAX_ATTEMPTS - 1 or wait > RIOT_MAX_WAIT_SECONDS:
+                raise
+            time.sleep(wait)
 
 
 rejected_keys = set()
