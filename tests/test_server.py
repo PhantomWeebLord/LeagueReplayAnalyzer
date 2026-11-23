@@ -559,13 +559,14 @@ class CloseReplayTests(SandboxTest):
         self.patch(s, "RECORDER", FakeRecorder("spectate"))
         self.window()
         self.assertEqual(s.close_replay(), {"ok": True})
-        self.assertEqual(self.kills, [["taskkill", "/PID", "999999"]])
+        self.assertEqual(self.kills, [[s.TASKKILL, "/PID", "999999"]])
+        self.assertTrue(s.TASKKILL.lower().endswith(r"\system32\taskkill.exe"))
 
     def test_forces_when_replay_stays_open(self):
         self.patch(s, "RECORDER", FakeRecorder("spectate"))
         self.window(stays=True)
         self.assertEqual(s.close_replay(), {"ok": True})
-        self.assertEqual(self.kills[1], ["taskkill", "/F", "/PID", "999999"])
+        self.assertEqual(self.kills[1], [s.TASKKILL, "/F", "/PID", "999999"])
 
     def test_refuses_other_processes(self):
         self.patch(s, "RECORDER", FakeRecorder("spectate"))

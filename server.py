@@ -51,6 +51,7 @@ EXIT_WHEN_IDLE = 6 * 3600
 REAL_GAME_PHASES = ("GameStart", "InProgress", "Reconnect")   # a replay reports WatchInProgress instead
 CONTENT_SECURITY_POLICY = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
                            "media-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'")
+TASKKILL = str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "taskkill.exe")  # never one found on PATH
 RECORDER = None
 LAST_PING = [time.time()]
 BYE_AT = [None]
@@ -448,12 +449,12 @@ def close_replay():
     if (core.process_name(pid) or "").lower() != "league of legends.exe":
         return {"error": "Could not identify League's replay window - close it in League."}  # never touch anything else
     try:
-        subprocess.run(["taskkill", "/PID", str(pid)], capture_output=True, timeout=10)
+        subprocess.run([TASKKILL, "/PID", str(pid)], capture_output=True, timeout=10)
         for _ in range(CLOSE_POLLS):  # give League a moment to close itself, then force it (it's only a replay)
             time.sleep(CLOSE_POLL_SECONDS)
             if not core.find_window(core.LEAGUE_WINDOW):
                 return {"ok": True}
-        subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True, timeout=10)
+        subprocess.run([TASKKILL, "/F", "/PID", str(pid)], capture_output=True, timeout=10)
         return {"ok": True}
     except Exception as e:
         return {"error": str(e)}
