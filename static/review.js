@@ -22,7 +22,10 @@ const GRADES = {
 };
 const GRADE_ORDER = ['brilliant', 'great', 'good', 'ok', 'inaccuracy', 'miss', 'mistake', 'blunder'];
 const BAD_GRADES = new Set(['inaccuracy', 'miss', 'mistake', 'blunder']);
-const PHASES = [{ key: 'early', label: 'Early game', from: 0, to: 840 }, { key: 'mid', label: 'Mid game', from: 840, to: 1500 }, { key: 'late', label: 'Late game', from: 1500, to: 1e9 }];
+const LANING_END = 840, MID_GAME_END = 1500; // 14:00 and 25:00
+const PHASES = [{ key: 'early', label: 'Early game', from: 0, to: LANING_END }, { key: 'mid', label: 'Mid game', from: LANING_END, to: MID_GAME_END }, { key: 'late', label: 'Late game', from: MID_GAME_END, to: 1e9 }];
+const LOSS_GRADES = ['ok', 'inaccuracy', 'mistake', 'blunder']; // by cost band
+const UNSPENT_GOLD = 1500, FAR_FROM_FIGHT = 5000;
 
 // ---------------------------------------------------------------- helpers
 const evalFor = (g, team, t) => { const c = smoothAt(g, 's10', clamp(t, 0, g.duration)); return 50 + 50 * (team === 100 ? c : -c); };
@@ -118,7 +121,7 @@ function reviewDeath(g, p, d) {
   const zone = zoneOf(d.x, d.y);
   const near = nearbyCounts(g, Math.max(0, t - 2), d.x, d.y, 2500);
   const allies = Math.max(1, near[team]), enemies = near[en];
-  const laning = t < 840 && !!zone.lane && p.role !== 'JUNGLE';
+  const laning = t < LANING_END && !!zone.lane && p.role !== 'JUNGLE';
   const k = d.kill;
   const killers = [k.killer, ...k.assists].map(id => g.byId[id]).filter(q => q && q.team === en);
   const gankedBy = killers.find(q => q.role === 'JUNGLE');
@@ -143,7 +146,7 @@ function reviewDeath(g, p, d) {
   if (ctrl > 0.15) { sev += 0.08; why.push('while your team was ahead'); tags.push('Team was ahead'); }
   if (conv.length) { sev += 0.12 + 0.08 * Math.min(3, sumV(conv)); tags.push('Enemy converted'); }
   if (bounty >= 450) { sev += 0.08; why.push(`giving up a ${bounty}g bounty`); tags.push('Shutdown given'); }
-  if (unspent >= 1500) { sev += 0.06; why.push(`holding ${fmtGold(unspent, false)} unspent gold`); tags.push('Unspent gold'); }
+  if (unspent >= UNSPENT_GOLD) { sev += 0.06; why.push(`holding ${fmtGold(unspent, false)} unspent gold`); tags.push('Unspent gold'); }
   if (laning && gankedBy) tags.push(`Ganked by ${gankedBy.cname}`);
   if (traded) { sev -= 0.35; tags.push(fT > fE ? 'Fight won' : 'Even trade'); }
   if (own.length) { sev -= 0.22; tags.push('Team got value'); }
@@ -172,7 +175,7 @@ function reviewDeath(g, p, d) {
     dwp = -(direct + convCost);
     COLLECT({ key: 'deathCost', v: cost, t });
     const b = bandOf('deathCost', cost);
-    grade = ['ok', 'inaccuracy', 'mistake', 'blunder'][b.band];
+    grade = LOSS_GRADES[b.band];
     sev = 0.2 + b.band * 0.3;
     const back = ownV + fightV;
     costTxt = ` It cost your team about ${(direct + convCost).toFixed(1)}% win chance` +
@@ -250,7 +253,7 @@ function reviewFights(g, A) {
           }
         }
       } else if (net < 0) {
-        const lossGrade = fb && fv < 0 ? ['ok', 'inaccuracy', 'mistake', 'blunder'][fb.band] : fb ? 'ok' : null;
+        const lossGrade = fb && fv < 0 ? LOSS_GRADES[fb.band] : fb ? 'ok' : null;
         if (adv > 0.4) { grade = lossGrade || (net <= -2 ? 'mistake' : 'inaccuracy'); detail = `Lost ${res} in ${f.zone} despite having the advantage${advs.length ? ` (${advs.join(', ')})` : ''}.`; better = 'This fight was winnable. Look at the engage and target selection — fight together and focus the closest threat.'; }
         else if (adv < -0.4) { grade = lossGrade || (net <= -2 ? 'mistake' : 'inaccuracy'); detail = `Fought at a disadvantage${disadv.length ? ` (${disadv.join(', ')})` : ''} and lost ${res} in ${f.zone}.`; better = 'You were not favoured here. Avoid fights you are behind in — give up the area and look for a trade on the other side of the map.'; }
         else { grade = lossGrade || (net <= -3 ? 'mistake' : net <= -2 ? 'inaccuracy' : 'ok'); detail = `Lost an even fight ${res} in ${f.zone}.`; better = BAD_GRADES.has(grade) ? 'Even fights come down to engage timing and focus — watch the replay of this one.' : ''; }
@@ -279,11 +282,11 @@ function reviewFights(g, A) {
       }
 
       // absent from a teamfight the team lost
-      if (f.involved >= 6 && f.size >= 2 && net <= -2 && t0 >= 840) {
+      if (f.involved >= 6 && f.size >= 2 && net <= -2 && t0 >= LANING_END) {
         for (const q of g.ps) {
           if (q.team !== team || isDead(q, t0) || scorers.has(q.id) || victims.has(q.id)) continue;
           const qp = posAt(q, t0); const dd = dist(qp, f);
-          if (dd < 5000) continue;
+          if (dd < FAR_FROM_FIGHT) continue;
           const side = gains(g, team, t0 - 40, t1 + 40).filter(x => x.killer === q.id || dist(x, qp) < 3000);
           if (side.length) A.push(act({ t: t0, team, actor: q.id, pids: [q.id], kind: 'absent', grade: 'good', weight: 0.6,
             title: `Cross-map: took ${names(side)} while your team fought`, detail: `Your team lost ${res} in ${f.zone}, but you took ${names(side)} at the same time.`,
@@ -304,7 +307,7 @@ function reviewObjectiveActions(g, A) {
   for (const o of g.objectiveReview) {
     const V = objValue(o); const taker = o.team, other = ENEMY[taker];
     const before = evalFor(g, taker, o.t - 45), after = evalFor(g, taker, o.t + 30);
-    const takers = new Set(g.ps.filter(q => q.team === taker && !isDead(q, o.t - 1) && dist(posAt(q, o.t - 1), o) < 5000).map(q => q.id));
+    const takers = new Set(g.ps.filter(q => q.team === taker && !isDead(q, o.t - 1) && dist(posAt(q, o.t - 1), o) < FAR_FROM_FIGHT).map(q => q.id));
     if (g.byId[o.killer] && g.byId[o.killer].team === taker) takers.add(o.killer);
     for (const a of o.assists || []) if (g.byId[a] && g.byId[a].team === taker) takers.add(a);
     let gT, dT;
@@ -331,14 +334,14 @@ function reviewObjectiveActions(g, A) {
     if (!losers.length) continue;
     const trade = gains(g, other, o.t - 60, o.t + 60); const tradeV = sumV(trade);
     const lb = -o.before;
-    const far = losers.filter(id => dist(posAt(g.byId[id], o.t - 1), o) > 5000).map(id => champOf(g, id));
+    const far = losers.filter(id => dist(posAt(g.byId[id], o.t - 1), o) > FAR_FROM_FIGHT).map(id => champOf(g, id));
     let gL, dL, bL = '';
     // trained model: net loss = the objective's value to them minus what you took at the same time
     const tradeWp = ov != null ? gainsValue(g, other, trade) : null;
     const netLoss = ov != null ? Math.max(0, ov - tradeWp) : null;
     const lossB = netLoss != null ? bandOf('objLoss', netLoss) : null;
     if (netLoss != null && o.aliveOther > 3) COLLECT({ key: 'objLoss', v: netLoss, t: o.t, obj: o.key });
-    const lossGrade = lossB ? ['ok', 'inaccuracy', 'mistake', 'blunder'][lossB.band] : null;
+    const lossGrade = lossB ? LOSS_GRADES[lossB.band] : null;
     if (lossB ? trade.length && (tradeWp >= ov * 0.8 || lossB.band === 0) : tradeV >= V * 0.6) { gL = 'ok'; dL = `Gave up ${o.name} but traded for ${names(trade)}.`; }
     else if (lossB ? trade.length && BAD_GRADES.has(lossGrade) : tradeV >= V * 0.3 && lb > -0.2) { gL = lossB ? lossGrade : 'inaccuracy'; dL = `Gave up ${o.name} and only partly traded for it (${names(trade)}).`; bL = 'The trade was uneven. Either contest with your whole team, or take something of equal value at the same time.'; }
     else if (o.aliveOther <= 3) { gL = 'ok'; dL = `Lost ${o.name} with only ${o.aliveOther} alive — the deaths before it caused this, not the call.`; }
@@ -377,7 +380,7 @@ function reviewRecalls(g, A) {
       let i = 1; while (i < g.ft.length - 1 && g.ft[i] < t) i++;
       const spent = i > 0 ? Math.max(0, s.cur[i - 1] + (s.gold[i] - s.gold[i - 1]) - s.cur[i]) : 0;
       const enemyObj = gains(g, en, t, t + 75).filter(x => x.kind === 'obj' && x.v >= 1.5)
-        .filter(x => isDead(p, x.t - 1) || dist(posAt(p, x.t - 1), x) > 5000);
+        .filter(x => isDead(p, x.t - 1) || dist(posAt(p, x.t - 1), x) > FAR_FROM_FIGHT);
       const ownTrade = gains(g, team, t - 20, t + 75).length > 0;
       const lostFight = g.fights.find(f => f.start > t && f.start < t + 45 && f.by[en] - f.by[team] >= 2 && f.involved >= 4
         && !f.kills.some(k => k.killer === p.id || k.victim === p.id || k.assists.includes(p.id)));
@@ -416,7 +419,7 @@ function reviewGoldLive(g, A, p) {
   // 2-second gold samples from the live recording: carrying 1500+ gold while alive for 75 s or more
   const L = g.live; let i = 0;
   while (i < L.t.length) {
-    if (L.t[i] >= 300 && L.gold[i] >= 1500 && !isDead(p, L.t[i]) && L.t[i] < g.duration - 90) {
+    if (L.t[i] >= 300 && L.gold[i] >= UNSPENT_GOLD && !isDead(p, L.t[i]) && L.t[i] < g.duration - 90) {
       let j = i, peak = L.gold[i];
       while (j + 1 < L.t.length && L.gold[j + 1] >= 1300 && L.gold[j + 1] >= L.gold[j] - 250) { j++; peak = Math.max(peak, L.gold[j]); }
       const dur = L.t[j] - L.t[i];
@@ -424,7 +427,7 @@ function reviewGoldLive(g, A, p) {
         const grade = (dur >= 180 || peak >= 2800) && L.t[i] < 1800 ? 'mistake' : 'inaccuracy';
         A.push(act({ t: L.t[i], team: p.team, actor: p.id, pids: [p.id], kind: 'gold', grade, weight: 0.6,
           title: `Unspent gold: up to ${fmtGold(peak, false)} for ${fmtTime(dur)}`,
-          detail: `From ${fmtTime(L.t[i])} to ${fmtTime(L.t[j])} you held at least ${fmtGold(Math.min(L.gold[i], 1500), false)} without spending it (live recording).`,
+          detail: `From ${fmtTime(L.t[i])} to ${fmtTime(L.t[j])} you held at least ${fmtGold(Math.min(L.gold[i], UNSPENT_GOLD), false)} without spending it (live recording).`,
           better: 'Unspent gold is wasted power. Find a safe moment to recall (after shoving a wave) as soon as you can complete an item or a big component.',
           before: evalFor(g, p.team, L.t[i]), after: evalFor(g, p.team, L.t[j]), tags: ['Gold'] }));
       }
@@ -438,7 +441,7 @@ function reviewGold(g, A) {
     const s = p.series, ft = g.ft, n = ft.length;
     let i = 0;
     while (i < n) {
-      if (ft[i] >= 300 && s.cur[i] >= 1500 && ft[i] < g.duration - 90) {
+      if (ft[i] >= 300 && s.cur[i] >= UNSPENT_GOLD && ft[i] < g.duration - 90) {
         let j = i;
         while (j + 1 < n && s.cur[j + 1] >= 1300 && (s.cur[j] + s.gold[j + 1] - s.gold[j] - s.cur[j + 1]) < 300) j++;
         if (j > i) {
@@ -448,7 +451,7 @@ function reviewGold(g, A) {
           if (ft[i] > 1800) grade = 'inaccuracy';
           A.push(act({ t: ft[i], team: p.team, actor: p.id, pids: [p.id], kind: 'gold', grade, weight: 0.6,
             title: `Unspent gold: up to ${fmtGold(peak, false)} for ~${mins} min`,
-            detail: `From ${fmtTime(ft[i])} to ${fmtTime(ft[j])} you carried more than ${fmtGold(Math.min(s.cur[i], 1500), false)} without buying.`,
+            detail: `From ${fmtTime(ft[i])} to ${fmtTime(ft[j])} you carried more than ${fmtGold(Math.min(s.cur[i], UNSPENT_GOLD), false)} without buying.`,
             better: 'Unspent gold is wasted power. Find a safe moment to recall (after shoving a wave) as soon as you can complete an item or a big component.',
             before: evalFor(g, p.team, ft[i]), after: evalFor(g, p.team, ft[j]), tags: ['Gold'] }));
         }
@@ -460,7 +463,7 @@ function reviewGold(g, A) {
 
 // ---------------------------------------------------------------- laning, farming, vision summaries
 function reviewSummaries(g, A) {
-  const T = 840, ft = g.ft, mins = g.duration / 60;
+  const T = LANING_END, ft = g.ft, mins = g.duration / 60;
   const at = (p, key, t) => interpSeries(ft, p.series[key], t);
   for (const p of g.ps) {
     const team = p.team, en = ENEMY[team];
@@ -571,7 +574,7 @@ function gameStory(g, myTeam) {
   const Nm = t => { const s = nm(t); return s.charAt(0).toUpperCase() + s.slice(1); };
   const why = { gold: 'a gold lead', xp: 'a level lead', vision: 'more vision', map: 'map control', obj: 'objectives', numbers: 'numbers after fights' };
   const out = [];
-  const T14 = Math.min(840, g.duration);
+  const T14 = Math.min(LANING_END, g.duration);
   const c14 = smoothAt(g, 's30', T14), st14 = stateAt(g, T14), gd14 = st14.raw.goldB - st14.raw.goldR;
   const lead14 = Math.abs(c14) < 0.08 ? 0 : c14 > 0 ? 100 : 200;
   const firstTower = g.structureEvents.find(s => s.kind === 'tower');
@@ -620,8 +623,7 @@ function reviewGame(g) {
   for (const team of [100, 200]) {
     const ps = g.ps.filter(p => p.team === team);
     const accs = ps.map(p => players[p.id].accuracy).filter(x => x != null);
-    teams[team] = { accuracy: accs.length ? accs.reduce((a, b) => a + b, 0) / accs.length : null, ...summarise(A.filter(a => a.team === team)) };
-    teams[team].accuracy = accs.length ? accs.reduce((a, b) => a + b, 0) / accs.length : null;
+    teams[team] = { ...summarise(A.filter(a => a.team === team)), accuracy: accs.length ? accs.reduce((a, b) => a + b, 0) / accs.length : null };
   }
   return { actions: A, players, teams };
 }
