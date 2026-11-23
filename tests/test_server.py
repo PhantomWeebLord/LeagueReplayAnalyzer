@@ -193,6 +193,15 @@ class StaticTests(ServerCase):
         self.assertEqual((st, h["Content-Type"]), (200, "text/html; charset=utf-8"))
         self.assertIn(b"Replay Analyzer", d)
 
+    def test_security_headers(self):
+        _, _, page = self.req("GET", "/")
+        csp = page["Content-Security-Policy"]
+        for rule in ("default-src 'self'", "script-src 'self'", "object-src 'none'", "frame-ancestors 'none'", "base-uri 'self'"):
+            self.assertIn(rule, csp)
+        self.assertNotIn("unsafe-eval", csp)
+        self.assertEqual(page["X-Content-Type-Options"], "nosniff")
+        self.assertEqual(self.req("GET", "/api/ping")[2]["X-Content-Type-Options"], "nosniff")
+
     def test_mime_types(self):
         for path, ctype in (("/app.js", "text/javascript; charset=utf-8"), ("/style.css", "text/css; charset=utf-8"), ("/logo.png", "image/png")):
             with self.subTest(path=path):

@@ -64,6 +64,8 @@ def make_handler(games, results, opts):
                 body = body.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", ctype)
+            if ctype.startswith("text/html"):  # the tests run under the same policy as the real page
+                self.send_header("Content-Security-Policy", getattr(s, "CONTENT_SECURITY_POLICY", ""))
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.end_headers()

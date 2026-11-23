@@ -49,6 +49,8 @@ WATCHDOG_TICK = 10
 EXIT_AFTER_CLOSE = 25                # seconds after the window closes (a reload pings again within this time)
 EXIT_WHEN_IDLE = 6 * 3600
 REAL_GAME_PHASES = ("GameStart", "InProgress", "Reconnect")   # a replay reports WatchInProgress instead
+CONTENT_SECURITY_POLICY = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+                           "media-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'")
 RECORDER = None
 LAST_PING = [time.time()]
 BYE_AT = [None]
@@ -101,6 +103,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(b)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(b)
 
@@ -109,6 +112,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(b)))
         self.send_header("Cache-Control", "max-age=86400" if cache else "no-cache")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        if ctype.startswith("text/html"):
+            self.send_header("Content-Security-Policy", CONTENT_SECURITY_POLICY)
         self.end_headers()
         self.wfile.write(b)
 
