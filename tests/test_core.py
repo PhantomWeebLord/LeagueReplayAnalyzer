@@ -859,6 +859,9 @@ class ChampionDataTests(SandboxTest):
         self.assertEqual(core.ddragon_version(), "15.1.1")
 
 
+PNG = b"\x89PNG\r\n\x1a\n" + b"pixels" + b"IEND\xaeB`\x82"
+
+
 class AssetTests(SandboxTest):
     def setUp(self):
         super().setUp()
@@ -869,13 +872,25 @@ class AssetTests(SandboxTest):
         def fake(url, timeout=None):
             self.urls.append(url)
             if ok(url):
-                return Resp(b"PNG")
+                return Resp(PNG)
             raise urllib.error.URLError("x")
         self.patch(urllib.request, "urlopen", fake)
 
+    def test_truncated_download_is_not_saved(self):
+        self.patch(urllib.request, "urlopen", lambda *_a, **_k: Resp(PNG[:12]))
+        self.assertIsNone(core.get_asset("champ", "Ahri"))
+        self.assertFalse((core.CACHE / "assets" / "champ_Ahri.png").exists())
+
+    def test_truncated_cached_image_is_replaced(self):
+        self.net()
+        (core.CACHE / "assets").mkdir()
+        (core.CACHE / "assets" / "champ_Ahri.png").write_bytes(PNG[:12])
+        self.assertEqual(core.get_asset("champ", "Ahri"), PNG)
+        self.assertEqual((core.CACHE / "assets" / "champ_Ahri.png").read_bytes(), PNG)
+
     def test_champion_download_and_cache(self):
         self.net()
-        self.assertEqual(core.get_asset("champ", "Ahri"), b"PNG")
+        self.assertEqual(core.get_asset("champ", "Ahri"), PNG)
         self.assertTrue((core.CACHE / "assets" / "champ_Ahri.png").exists())
         core.get_asset("champ", "Ahri")
         self.assertEqual(len(self.urls), 1)
@@ -892,7 +907,7 @@ class AssetTests(SandboxTest):
 
     def test_map_falls_back_to_old_cdn(self):
         self.net(lambda u: "6.8.1" in u)
-        self.assertEqual(core.get_asset("map", "map11"), b"PNG")
+        self.assertEqual(core.get_asset("map", "map11"), PNG)
         self.assertEqual(len(self.urls), 2)
 
     def test_all_sources_fail(self):

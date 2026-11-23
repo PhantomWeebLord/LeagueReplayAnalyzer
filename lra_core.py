@@ -762,6 +762,10 @@ def ddragon_version() -> str:
     return _dd_version
 
 
+def _is_complete_png(b: bytes) -> bool:
+    return b.startswith(b"\x89PNG\r\n\x1a\n") and b"IEND" in b[-16:]
+
+
 CHAMP_FIX = {"FiddleSticks": "Fiddlesticks"}
 
 
@@ -780,13 +784,16 @@ def get_asset(kind, name):
     else:
         return None
     if local.exists():
-        return local.read_bytes()
+        b = local.read_bytes()
+        if _is_complete_png(b):
+            return b
     for u in urls:
         try:
             with urllib.request.urlopen(u, timeout=DDRAGON_ASSET_TIMEOUT) as r:
                 b = r.read()
-            local.write_bytes(b)
-            return b
+            if _is_complete_png(b):
+                write_atomic_bytes(local, b)
+                return b
         except Exception:
             continue
     return None
