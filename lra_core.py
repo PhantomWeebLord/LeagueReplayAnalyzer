@@ -80,6 +80,9 @@ SW_RESTORE = 9
 HWND_BOTTOM = 1
 SWP_NOSIZE_NOMOVE_NOACTIVATE = 0x0001 | 0x0002 | 0x0010
 
+REPLACE_ATTEMPTS = 8           # Windows refuses to replace a file while another thread is reading it
+REPLACE_RETRY_SECONDS = 0.02
+
 _lock = threading.Lock()
 _meta_cache = {}  # path -> (mtime, summary)
 
@@ -92,15 +95,31 @@ def load_config():
         return {}
 
 
-def write_atomic(path, text):
+def replace_file(src, dst):
+    """os.replace, waiting briefly if another thread still has the target open."""
+    for attempt in range(REPLACE_ATTEMPTS):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if attempt == REPLACE_ATTEMPTS - 1:
+                raise
+            time.sleep(REPLACE_RETRY_SECONDS * (attempt + 1))
+
+
+def write_atomic_bytes(path, data: bytes):
     """Write via a temp file so a crash or a second request can never leave a half-written file behind."""
     path = Path(path)
     tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     try:
-        tmp.write_text(text, "utf-8")
-        os.replace(tmp, path)
+        tmp.write_bytes(data)
+        replace_file(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)
+
+
+def write_atomic(path, text: str):
+    write_atomic_bytes(path, text.encode("utf-8"))
 
 
 def save_config(cfg):

@@ -5,6 +5,8 @@ import io
 import json
 import os
 import subprocess
+import threading
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -81,12 +83,24 @@ class ConfigTests(SandboxTest):
         self.assertEqual(f.read_text("utf-8"), "old")
         self.assertEqual(list(self.tmp.glob("*.tmp")), [])
 
-    def test_known_H10_write_fails_while_file_is_open(self):
+    def test_write_waits_for_a_reader_to_finish(self):
         f = self.tmp / "busy.json"
-        f.write_text("{}", "utf-8")
+        f.write_text("old", "utf-8")
+        h = open(f, "rb")
+        threading.Timer(0.03, h.close).start()
+        core.write_atomic(f, "new")
+        self.assertEqual(f.read_text("utf-8"), "new")
+
+    def test_write_gives_up_if_the_file_stays_locked(self):
+        f = self.tmp / "busy.json"
+        f.write_text("old", "utf-8")
+        real = time.sleep
+        self.patch(time, "sleep", lambda _s: real(0))
         with open(f, "rb"):
             with self.assertRaises(PermissionError):
-                core.write_atomic(f, "{}")
+                core.write_atomic(f, "new")
+        self.assertEqual(f.read_text("utf-8"), "old")
+        self.assertEqual(list(self.tmp.glob("*.tmp")), [])
 
     def test_replay_dir_default_and_override(self):
         self.assertEqual(core.replay_dir(), core.DEFAULT_REPLAY_DIR)

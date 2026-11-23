@@ -297,7 +297,7 @@ class LiveRecorder:
         p = core.LIVE_DIR / f"{s['id']}.json"
         tmp = p.with_suffix(".tmp")
         tmp.write_text(json.dumps(out), "utf-8")
-        tmp.replace(p)
+        core.replace_file(tmp, p)
 
     # ------------------------------------------------ league client state (cached briefly)
     def phase(self):
