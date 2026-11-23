@@ -788,5 +788,22 @@ class LifecycleTests(SandboxTest):
         b = s.AppServer(("127.0.0.1", port), s.Handler)
         b.server_close()
 
+    def test_log_is_rotated_when_large(self):
+        log = self.tmp / "app.log"
+        log.write_bytes(b"x" * (s.MAX_LOG_BYTES + 1))
+        h = s.open_log(log)
+        h.write("new\n")
+        h.close()
+        self.assertEqual(log.read_text("utf-8"), "new\n")
+        self.assertEqual((self.tmp / "app.log.1").stat().st_size, s.MAX_LOG_BYTES + 1)
+
+    def test_small_log_is_appended(self):
+        log = self.tmp / "app.log"
+        log.write_text("old\n", "utf-8")
+        h = s.open_log(log)
+        h.write("new\n")
+        h.close()
+        self.assertEqual(log.read_text("utf-8"), "old\nnew\n")
+
     def test_backlog_is_large_enough_for_a_page_load(self):
         self.assertGreaterEqual(s.AppServer.request_queue_size, 64)

@@ -54,6 +54,7 @@ SAFE_CAMERA_MODES = (None, "top")    # third-person / free-fly modes crashed Lea
 LISTEN_BACKLOG = 128
 MAX_BODY_BYTES = 1 << 20             # the app's own requests are a few hundred bytes
 REQUEST_TIMEOUT = 30                 # seconds a client may stall on the socket
+MAX_LOG_BYTES = 2 << 20
 PORT_SEARCH_RANGE = 10
 STATUS_CACHE_SECONDS = 2.5
 CLOSE_POLLS, CLOSE_POLL_SECONDS = 12, 0.25
@@ -540,10 +541,20 @@ def watchdog():
             os._exit(0)
 
 
+def open_log(path: Path):
+    """Append to the log, keeping one previous file so it can never grow without limit."""
+    try:
+        if path.stat().st_size > MAX_LOG_BYTES:
+            os.replace(path, path.with_name(path.name + ".1"))
+    except OSError:
+        pass
+    return open(path, "a", encoding="utf-8", buffering=1)
+
+
 def main():
     parse_args(sys.argv[1:])
     if core.FROZEN:  # windowed exe has no console: keep a log in the data folder
-        log = open(core.DATA / "app.log", "a", encoding="utf-8", buffering=1)
+        log = open_log(core.DATA / "app.log")
         sys.stdout = sys.stderr = log
         print(f"\n--- start {time.ctime()} v{VERSION} data={core.DATA}")
     port = OPTS["port"]
