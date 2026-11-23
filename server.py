@@ -45,6 +45,7 @@ CLOSE_POLLS, CLOSE_POLL_SECONDS = 12, 0.25
 WATCHDOG_TICK = 10
 EXIT_AFTER_CLOSE = 25                # seconds after the window closes (a reload pings again within this time)
 EXIT_WHEN_IDLE = 6 * 3600
+REAL_GAME_PHASES = ("GameStart", "InProgress", "Reconnect")   # a replay reports WatchInProgress instead
 RECORDER = None
 LAST_PING = [time.time()]
 BYE_AT = [None]
@@ -385,12 +386,22 @@ def replay_status(match_id, version):
     return out
 
 
+def _client_in_real_game():
+    try:
+        return core.lcu_get("/lol-gameflow/v1/gameflow-phase", timeout=3) in REAL_GAME_PHASES
+    except RiotError:
+        return False
+
+
 def close_replay():
-    """Close the League replay window (only ever a replay/spectate session - never a game you're playing)."""
+    """Close the League replay window. Only a session positively identified as a replay is ever closed:
+    during loading, a freeze or a reconnect the live API goes quiet, and that must never end a real game."""
     st = RECORDER.state() if RECORDER else {}
-    if st.get("status") == "play":
+    if st.get("status") == "play" or _client_in_real_game():
         return {"error": "You're in a game - not closing it."}
-    if not st.get("status") == "spectate" and not core.find_window(core.LEAGUE_WINDOW):
+    if st.get("status") != "spectate":
+        if core.find_window(core.LEAGUE_WINDOW):
+            return {"error": "League isn't reporting a replay right now, so it was left open. Close it in League."}
         return {"error": "No replay is open in League."}
     pid = core.league_window_pid()
     if not pid:

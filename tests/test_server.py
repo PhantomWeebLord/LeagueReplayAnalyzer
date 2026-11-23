@@ -515,11 +515,26 @@ class CloseReplayTests(SandboxTest):
         self.patch(subprocess, "run", lambda *_a, **_k: (_ for _ in ()).throw(OSError("denied")))
         self.assertEqual(s.close_replay(), {"error": "denied"})
 
-    def test_known_C1_kills_a_real_game_when_live_api_is_silent(self):
+    def test_never_kills_when_the_live_api_is_silent(self):
         self.patch(s, "RECORDER", FakeRecorder("idle"))
         self.window(stays=True)
+        self.assertIn("Close it in League", s.close_replay()["error"])
+        self.assertEqual(self.kills, [])
+
+    def test_never_kills_when_the_client_reports_a_real_game(self):
+        for phase in ("InProgress", "Reconnect", "GameStart"):
+            with self.subTest(phase=phase):
+                self.patch(s, "RECORDER", FakeRecorder("spectate"))
+                self.window(stays=True)
+                self.patch(core, "lcu_get", lambda *_a, **_k: phase)
+                self.assertIn("in a game", s.close_replay()["error"])
+                self.assertEqual(self.kills, [])
+
+    def test_closes_when_the_client_reports_a_replay(self):
+        self.patch(s, "RECORDER", FakeRecorder("spectate"))
+        self.window()
+        self.patch(core, "lcu_get", lambda *_a, **_k: "WatchInProgress")
         self.assertEqual(s.close_replay(), {"ok": True})
-        self.assertTrue(any("/F" in k for k in self.kills))
 
 
 class LifecycleTests(SandboxTest):
