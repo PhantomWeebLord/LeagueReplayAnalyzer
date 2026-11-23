@@ -10,6 +10,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from unittest import mock
 
 from tests import fixtures as fx
 from tests.sandbox import SandboxTest, core
@@ -116,6 +117,14 @@ class ConfigTests(SandboxTest):
                 core.write_atomic(f, "new")
         self.assertEqual(f.read_text("utf-8"), "old")
         self.assertEqual(list(self.tmp.glob("*.tmp")), [])
+
+    def test_environment_key_overrides_saved_key(self):
+        core.save_config({"apiKey": "saved"})
+        self.assertEqual(core.riot_api_key(), "saved")
+        with mock.patch.dict(os.environ, {"RIOT_API_KEY": " from-env "}):
+            self.assertEqual(core.riot_api_key(), "from-env")
+        core.save_config({})
+        self.assertEqual(core.riot_api_key(), "")
 
     def test_replay_dir_default_and_override(self):
         self.assertEqual(core.replay_dir(), core.DEFAULT_REPLAY_DIR)

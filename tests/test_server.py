@@ -245,6 +245,11 @@ class ApiTests(ServerCase):
         self.assertNotIn(key.encode(), data)
         self.assertEqual(json.loads(data)["keyHint"], "…90ab")
 
+    def test_environment_key_counts_as_configured(self):
+        with mock.patch.dict(os.environ, {"RIOT_API_KEY": "RGAPI-env-key-abcd"}):
+            d = self.get("/api/config")[1]
+        self.assertEqual((d["hasKey"], d["keyHint"]), (True, "…abcd"))
+
     def test_config_post_key(self):
         core.rejected_keys.add("NEWKEY")
         self.assertEqual(self.post("/api/config", {"apiKey": "  NEWKEY "})[1], {"ok": True})

@@ -175,6 +175,11 @@ def save_config(cfg: dict):
     _last_config = dict(cfg)
 
 
+def riot_api_key() -> str:
+    """RIOT_API_KEY in the environment overrides the key saved in the app."""
+    return (os.environ.get("RIOT_API_KEY") or load_config().get("apiKey") or "").strip()
+
+
 def replay_dir():
     d = load_config().get("replayDir")
     return Path(d) if d else DEFAULT_REPLAY_DIR
@@ -516,7 +521,7 @@ def _load_match(match_id: str, refresh: bool) -> dict:
     """Match + timeline. Sources: local cache -> Riot API (needs key) -> running League client (no key)."""
     CACHE.mkdir(exist_ok=True)
     cf = CACHE / f"{match_id}.json"
-    key = load_config().get("apiKey")
+    key = riot_api_key()
     cached = _read_cached_match(cf)
     if cached:
         # an API key gives richer data (wards, items, levels) than the client; upgrade client-sourced caches

@@ -131,6 +131,16 @@ class FetchToolTests(SandboxTest):
         (self.tmp / "config.json").write_text(json.dumps({"apiKey": " RGAPI-x "}), "utf-8")
         self.assertEqual(fh.load_key(), "RGAPI-x")
 
+    def test_load_key_from_environment(self):
+        with mock.patch.dict(os.environ, {"RIOT_API_KEY": "env-key"}):
+            self.assertEqual(fh.load_key(), "env-key")
+
+    def test_example_settings_file_holds_no_values_that_could_be_secrets(self):
+        lines = (ROOT / ".env.example").read_text("utf-8").splitlines()
+        settings = dict(l.split("=", 1) for l in lines if l and not l.startswith("#"))
+        self.assertEqual(settings["RIOT_API_KEY"], "")
+        self.assertEqual(set(settings), {"RIOT_API_KEY", "LRA_PORT", "LRA_LIVE_URL"})
+
     def test_load_key_alternate_names(self):
         (self.tmp / "config.json").write_text(json.dumps({"riotApiKey": "k2"}), "utf-8")
         self.assertEqual(fh.load_key(), "k2")

@@ -1,4 +1,5 @@
 """Isolation for every test: temp data folders, no internet, no child processes, no League client, no window control."""
+import os
 import shutil
 import subprocess
 import sys
@@ -37,6 +38,10 @@ class Sandbox:
         return value
 
     def start(self):
+        env = mock.patch.dict(os.environ)
+        env.start()
+        self.patches.append(env)
+        os.environ.pop("RIOT_API_KEY", None)
         self.dir = Path(tempfile.mkdtemp(prefix="lra_test_"))
         (self.dir / "cache").mkdir()
         (self.dir / "replays").mkdir()

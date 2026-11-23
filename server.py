@@ -154,8 +154,7 @@ class Handler(BaseHTTPRequestHandler):
         return self.send_json(core.list_replays())
 
     def _get_config(self):
-        cfg = core.load_config()
-        k = cfg.get("apiKey") or ""
+        k = core.riot_api_key()
         return self.send_json({"hasKey": bool(k), "keyHint": "…" + k[-4:] if k else "",
                                "replayDir": str(core.replay_dir()), "lcu": bool(core.find_lockfile()),
                                "keyRejected": bool(k) and k in core.rejected_keys, "dataDir": str(core.DATA),

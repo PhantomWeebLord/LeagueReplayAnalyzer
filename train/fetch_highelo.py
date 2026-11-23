@@ -58,6 +58,8 @@ def log(msg):
 
 
 def load_key():
+    if os.environ.get("RIOT_API_KEY"):
+        return os.environ["RIOT_API_KEY"].strip()
     for p in (ROOT / "config.json", Path(os.environ.get("LOCALAPPDATA", "")) / "League Replay Analyzer" / "config.json"):
         try:
             c = json.loads(p.read_text(encoding="utf-8"))
