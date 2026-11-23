@@ -53,8 +53,10 @@ class ConfigTests(SandboxTest):
         core.CONFIG_FILE.write_text("{broken", "utf-8")
         self.assertEqual(core.load_config(), {})
 
-    def test_known_H1_read_error_followed_by_save_erases_key(self):
+    def test_read_error_followed_by_save_keeps_key(self):
         core.save_config({"apiKey": "keep"})
+        core.load_config()
+        self.patch(time, "sleep", lambda _s: None)
         real = Path.read_text
         def locked(p, *a, **k):
             if p == core.CONFIG_FILE:
@@ -65,7 +67,18 @@ class ConfigTests(SandboxTest):
         cfg["replayDir"] = "x"
         core.save_config(cfg)
         self.box.patches.pop().stop()
-        self.assertNotIn("apiKey", core.load_config())
+        self.assertEqual(core.load_config(), {"apiKey": "keep", "replayDir": "x"})
+
+    def test_damaged_config_is_kept_for_recovery(self):
+        core.CONFIG_FILE.write_text('{"apiKey": "half', "utf-8")
+        self.assertEqual(core.load_config(), {})
+        self.assertEqual((self.tmp / "config.damaged.json").read_text("utf-8"), '{"apiKey": "half')
+        core.save_config({"replayDir": "x"})
+        self.assertEqual((self.tmp / "config.damaged.json").read_text("utf-8"), '{"apiKey": "half')
+
+    def test_config_of_the_wrong_shape_is_empty(self):
+        core.CONFIG_FILE.write_text("[1, 2]", "utf-8")
+        self.assertEqual(core.load_config(), {})
 
     def test_write_atomic_replaces_file_and_leaves_no_temp(self):
         f = self.tmp / "a.json"

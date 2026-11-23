@@ -88,11 +88,42 @@ _meta_cache = {}  # path -> (mtime, summary)
 
 
 # ---------------------------------------------------------------- config
-def load_config():
+CONFIG_READ_ATTEMPTS = 5
+CONFIG_RETRY_SECONDS = 0.05
+_last_config = {}
+
+
+def _keep_damaged_config():
+    """Saving would overwrite a damaged config (and the API key in it), so keep one copy for recovery."""
+    copy = CONFIG_FILE.with_name("config.damaged.json")
     try:
-        return json.loads(CONFIG_FILE.read_text("utf-8"))
-    except Exception:
-        return {}
+        if not copy.exists():
+            shutil.copy2(CONFIG_FILE, copy)
+    except OSError:
+        pass
+
+
+def load_config() -> dict:
+    """A missing or damaged file is an empty config. A brief read failure returns the last good one,
+    because the next save would otherwise erase every setting."""
+    global _last_config
+    for _ in range(CONFIG_READ_ATTEMPTS):
+        try:
+            cfg = json.loads(CONFIG_FILE.read_text("utf-8"))
+        except FileNotFoundError:
+            return {}
+        except OSError:
+            time.sleep(CONFIG_RETRY_SECONDS)
+            continue
+        except ValueError:
+            _keep_damaged_config()
+            return {}
+        if not isinstance(cfg, dict):
+            _keep_damaged_config()
+            return {}
+        _last_config = cfg
+        return dict(cfg)
+    return dict(_last_config)
 
 
 def replace_file(src, dst):
@@ -122,8 +153,10 @@ def write_atomic(path, text: str):
     write_atomic_bytes(path, text.encode("utf-8"))
 
 
-def save_config(cfg):
+def save_config(cfg: dict):
+    global _last_config
     write_atomic(CONFIG_FILE, json.dumps(cfg, indent=2))
+    _last_config = dict(cfg)
 
 
 def replay_dir():

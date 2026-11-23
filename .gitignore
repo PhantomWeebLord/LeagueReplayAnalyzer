@@ -1,4 +1,5 @@
 config.json
+config.damaged.json
 cache/
 live/
 build/
