@@ -412,15 +412,42 @@ def _read_cached_match(path: Path):
     return data if is_game_data(data) else None
 
 
-def _fetch_riot_match(region: str, match_id: str, key: str) -> dict:
-    match = riot_get(region, f"/lol/match/v5/matches/{match_id}", key)
+def _read_partial_match(path: Path):
+    try:
+        match = json.loads(path.read_text("utf-8"))
+    except (OSError, ValueError):
+        return None
+    return match if is_match_payload(match) else None
+
+
+def _fetch_riot_match(region: str, match_id: str, key: str, resume: bool = True) -> dict:
+    """A match whose timeline call failed is kept in a .part file, so a retry only requests the timeline."""
+    part = CACHE / f"{match_id}.part.json"
+    match = _read_partial_match(part) if resume else None
+    if match is None:
+        match = riot_get(region, f"/lol/match/v5/matches/{match_id}", key)
+        if not is_match_payload(match):
+            raise RiotError(502, "Riot returned an unexpected response for this match.")
+        write_atomic(part, json.dumps(match))
     timeline = riot_get(region, f"/lol/match/v5/matches/{match_id}/timeline", key)
-    if not is_match_payload(match) or not is_timeline_payload(timeline):
+    if not is_timeline_payload(timeline):
         raise RiotError(502, "Riot returned an unexpected response for this match.")
+    part.unlink(missing_ok=True)
     return {"source": "riot-api", "match": match, "timeline": timeline}
 
 
+_match_locks = {}
+
+
 def get_match(match_id: str, refresh: bool = False) -> dict:
+    """One download per match at a time: a second request for the same game waits and then reads the cache."""
+    with _lock:
+        match_lock = _match_locks.setdefault(match_id, threading.Lock())
+    with match_lock:
+        return _load_match(match_id, refresh)
+
+
+def _load_match(match_id: str, refresh: bool) -> dict:
     """Match + timeline. Sources: local cache -> Riot API (needs key) -> running League client (no key)."""
     CACHE.mkdir(exist_ok=True)
     cf = CACHE / f"{match_id}.json"
@@ -441,7 +468,7 @@ def get_match(match_id: str, refresh: bool = False) -> dict:
         errors.append("Riot API: key was rejected (expired?) - paste a fresh one")
     elif key:
         try:
-            data = _fetch_riot_match(region, match_id, key)
+            data = _fetch_riot_match(region, match_id, key, resume=not refresh)
             write_atomic(cf, json.dumps(data))
             return data
         except RiotError as e:

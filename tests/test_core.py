@@ -565,18 +565,52 @@ class GetMatchTests(SandboxTest):
                 (core.CACHE / "NA1_1.json").write_text(bad, "utf-8")
                 self.assertEqual(core.get_match("NA1_1")["marker"], "from-client")
 
-    def test_known_M9_failed_timeline_discards_match(self):
+    def test_match_is_kept_when_the_timeline_fails(self):
         core.save_config({"apiKey": "k"})
-        paths = []
+        paths, fail = [], [True]
         def half(_r, path, _k):
             paths.append(path)
             if path.endswith("/timeline"):
-                raise core.RiotError(500, "x")
+                if fail[0]:
+                    raise core.RiotError(500, "x")
+                return self.game["timeline"]
             return self.game["match"]
         self.patch(core, "riot_get", half)
         core.get_match("NA1_1")
+        fail[0] = False
+        (core.CACHE / "NA1_1.json").unlink()
+        self.assertEqual(core.get_match("NA1_1")["source"], "riot-api")
+        self.assertEqual(paths.count("/lol/match/v5/matches/NA1_1"), 1)
+        self.assertEqual(list(core.CACHE.glob("*.part.json")), [])
+
+    def test_refresh_ignores_a_saved_partial(self):
+        core.save_config({"apiKey": "k"})
+        (core.CACHE / "NA1_1.part.json").write_text(json.dumps(self.game["match"]), "utf-8")
         core.get_match("NA1_1", refresh=True)
-        self.assertEqual(paths.count("/lol/match/v5/matches/NA1_1"), 2)
+        self.assertEqual([p for _r, p, _k in self.api_calls].count("/lol/match/v5/matches/NA1_1"), 1)
+
+    def test_damaged_partial_is_ignored(self):
+        core.save_config({"apiKey": "k"})
+        (core.CACHE / "NA1_1.part.json").write_text("{bad", "utf-8")
+        self.assertEqual(core.get_match("NA1_1")["source"], "riot-api")
+
+    def test_simultaneous_opens_download_once(self):
+        core.save_config({"apiKey": "k"})
+        barrier = threading.Barrier(4)
+        real = self.fake_api
+        def slow(*a):
+            time.sleep(0.02)
+            return real(*a)
+        self.patch(core, "riot_get", slow)
+        def worker():
+            barrier.wait()
+            core.get_match("NA1_1")
+        threads = [threading.Thread(target=worker) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(len(self.api_calls), 2)
 
 
 class LockfileTests(SandboxTest):
