@@ -262,6 +262,11 @@ class ListReplaysTests(SandboxTest):
         self.assertEqual(len(rows), 2)
         self.assertIn("not a League replay", rows[1]["error"])
 
+    def test_unreadable_file_error_has_no_path(self):
+        self.rofl("NA1-1.rofl", 1000)
+        self.patch(core, "parse_rofl", lambda _p: (_ for _ in ()).throw(PermissionError(r"C:\\Users\\secret\\x.rofl")))
+        self.assertNotIn("secret", core.list_replays()["replays"][0]["error"])
+
     def test_cached_flag(self):
         self.rofl("NA1-5.rofl", 1000)
         self.assertFalse(core.list_replays()["replays"][0]["cached"])
@@ -302,7 +307,7 @@ class RiotGetTests(SandboxTest):
         self.assertIn("LeagueReplayAnalyzer", seen["ua"])
 
     def test_http_errors_become_riot_errors(self):
-        for code, text in ((401, "invalid"), (403, "expire"), (404, "not found"), (429, "Rate limited"), (500, "server body")):
+        for code, text in ((401, "invalid"), (403, "expire"), (404, "not found"), (429, "Rate limited"), (500, "http 500")):
             with self.subTest(code=code):
                 def fake(req, **_k):
                     raise http_error(req.full_url, code, b"server body")
@@ -328,6 +333,17 @@ class RiotGetTests(SandboxTest):
         with self.assertRaises(core.RiotError) as c:
             core.riot_get("americas", "/x", "k")
         self.assertEqual(c.exception.status, 502)
+
+    def test_messages_never_contain_system_details(self):
+        for err in (urllib.error.URLError(r"[WinError 10061] C:\\secret"), TimeoutError(r"C:\\secret"), ConnectionResetError(r"[WinError 10054] C:\\secret")):
+            with self.subTest(err=type(err).__name__):
+                def fake(*_a, **_k):
+                    raise err
+                self.patch(urllib.request, "urlopen", fake)
+                with self.assertRaises(core.RiotError) as c:
+                    core.riot_get("americas", "/x", "k")
+                self.assertNotIn("secret", str(c.exception))
+                self.assertNotIn("WinError", str(c.exception))
 
     def test_bad_json_becomes_502(self):
         self.patch(urllib.request, "urlopen", lambda *_a, **_k: Resp("not json"))
@@ -799,6 +815,14 @@ class LcuRequestTests(SandboxTest):
                 with self.assertRaises(core.RiotError) as c:
                     core.lcu_get("/x")
                 self.assertEqual(c.exception.status, 503)
+
+    def test_client_errors_never_contain_system_details(self):
+        def fake(*_a, **_k):
+            raise urllib.error.URLError(r"[WinError 10061] C:\\secret")
+        self.patch(urllib.request, "urlopen", fake)
+        with self.assertRaises(core.RiotError) as c:
+            core.lcu_get("/x")
+        self.assertNotIn("WinError", str(c.exception))
 
     def test_lockfile_race_is_a_client_error(self):
         self.patch(core, "find_lockfile", lambda: self.tmp / "gone")

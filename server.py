@@ -189,8 +189,11 @@ class Handler(BaseHTTPRequestHandler):
             meta = core.parse_rofl(p)
             meta["path"] = str(p)
             return self.send_json(meta)
-        except Exception as e:
+        except ValueError as e:  # the parser's messages are written for the player
             return self.send_json({"error": f"Could not read this replay: {e}"})
+        except Exception:
+            traceback.print_exc()
+            return self.send_json({"error": "Could not read this replay."})
 
     def _get_live_state(self):
         return self.send_json(RECORDER.state() if RECORDER else {"status": "disabled"})
@@ -284,8 +287,8 @@ class Handler(BaseHTTPRequestHandler):
             body.pop("cameraMode")
         try:
             return self.send_json(RECORDER.live_post("/replay/render", body))
-        except Exception as e:
-            return self.send_json({"error": f"Replay control is not available ({e})"})
+        except Exception:
+            return self.send_json({"error": "Replay control is not available."})
 
     def _post_window(self, data):
         return self.send_json({"ok": core.arrange_windows(str(data.get("action")), APP_TITLE)})
@@ -312,8 +315,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"error": "Bad playback values"}, 400)
         try:
             return self.send_json(RECORDER.live_post("/replay/playback", body))
-        except Exception as e:
-            return self.send_json({"error": f"Replay control is not available ({e})", "enabledInConfig": core.replay_api_enabled()})
+        except Exception:
+            return self.send_json({"error": "Replay control is not available.", "enabledInConfig": core.replay_api_enabled()})
 
     def _post_watch(self, data):
         mid = str(data.get("matchId") or "").upper()
@@ -322,15 +325,21 @@ class Handler(BaseHTTPRequestHandler):
         try:
             core.watch_replay(mid, data.get("path"))
             return self.send_json({"ok": True})
-        except (RiotError, OSError) as e:
+        except RiotError as e:
             return self.send_json({"error": f"Could not start the replay in League: {e}"})
+        except OSError:
+            traceback.print_exc()
+            return self.send_json({"error": "Could not start the replay in League."})
 
     def _post_enable_api(self, _data):
         try:
             core.enable_replay_api()
             return self.send_json({"ok": True})
-        except (RiotError, OSError) as e:
+        except RiotError as e:
             return self.send_json({"error": str(e)})
+        except OSError:
+            traceback.print_exc()
+            return self.send_json({"error": "Could not update League's settings file."})
 
     POST_ROUTES = {
         "/api/config": _post_config, "/api/replay/render": _post_render, "/api/replay/window": _post_window, "/api/replay/start-client": _post_start_client,
@@ -469,8 +478,9 @@ def close_replay():
                 return {"ok": True}
         subprocess.run([TASKKILL, "/F", "/PID", str(pid)], capture_output=True, timeout=10)
         return {"ok": True}
-    except Exception as e:
-        return {"error": str(e)}
+    except Exception:
+        traceback.print_exc()
+        return {"error": "Could not close the replay. Close it in League."}
 
 
 # ---------------------------------------------------------------- app window & lifecycle

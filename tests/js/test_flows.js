@@ -47,6 +47,11 @@ test('flow: a game with no players shows a clear error', async () => {
   await stubbedApi({ '/api/match': d }, () => openReplay({ file: 'f', matchId: 'NA1_1', players: [] }));
   eq(S.game, null); ok($('banner').textContent.includes('no players')); ok(visible('welcome') && !visible('app')); banner('');
 });
+test('flow: an unexpected analysis error is not shown raw', async () => {
+  const real = window.reviewGame; window.reviewGame = () => { throw new TypeError("Cannot read properties of undefined (reading 'secret')"); };
+  try { await openReplay(replayFor(/5000000203/)); ok($('banner').textContent.includes('Could not analyse this match')); ok(!$('banner').textContent.includes('secret')); }
+  finally { window.reviewGame = real; banner(''); }
+});
 test('flow: save an API key from the UI', async () => { $('apiKey').value = ' RGAPI-test '; $('saveKey').click(); ok(await until(() => $('keyStatus').textContent.includes('Key saved'))); eq($('apiKey').value, ''); await api('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"apiKey":""}' }); await refreshConfig(); banner(''); });
 test('flow: Trends analyses every replay', async () => {
   showTrends(true); ok(await until(() => !T.running && T.rows.length >= 6, 20000), 'trends finished'); ok(visible('trends')); ok($('trBody').textContent.includes('games analysed')); ok($('trBody').textContent.includes('Recurring mistakes'));

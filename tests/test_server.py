@@ -419,6 +419,22 @@ class ApiTests(ServerCase):
         self.assertEqual(self.post("/api/replay/watch", {"matchId": "na1_5", "path": "x.rofl"})[1], {"ok": True})
         self.assertEqual(calls, [("NA1_5", "x.rofl")])
 
+    def test_errors_never_expose_system_details(self):
+        rec = FakeRecorder()
+        rec.get_error = OSError(r"[WinError 10061] C:\\secret")
+        self.patch(s, "RECORDER", rec)
+        self.patch(core, "watch_replay", lambda *_a: (_ for _ in ()).throw(OSError(r"C:\\secret\\a.rofl")))
+        f = self.tmp / "NA1-1.rofl"
+        f.write_bytes(b"x")
+        self.patch(core, "parse_rofl", lambda _p: (_ for _ in ()).throw(PermissionError(r"C:\\secret\\a.rofl")))
+        with contextlib.redirect_stderr(io.StringIO()):
+            answers = [self.post("/api/replay/render", {"fogOfWar": True})[1], self.post("/api/replay/playback", {"paused": True})[1],
+                       self.post("/api/replay/watch", {"matchId": "NA1_1"})[1], self.get("/api/replay-file?path=" + urllib.parse.quote(str(f)))[1]]
+        for a in answers:
+            self.assertIn("error", a)
+            self.assertNotIn("secret", a["error"])
+            self.assertNotIn("WinError", a["error"])
+
     def test_watch_bad_id(self):
         self.assertEqual(self.post("/api/replay/watch", {"matchId": "../x"})[0], 400)
 
@@ -430,7 +446,7 @@ class ApiTests(ServerCase):
         self.patch(core, "enable_replay_api", lambda: True)
         self.assertEqual(self.post("/api/replay/enable-api")[1], {"ok": True})
         self.patch(core, "enable_replay_api", lambda: (_ for _ in ()).throw(OSError("denied")))
-        self.assertEqual(self.post("/api/replay/enable-api")[1], {"error": "denied"})
+        self.assertEqual(self.post("/api/replay/enable-api")[1], {"error": "Could not update League's settings file."})
 
     def test_close_route(self):
         self.patch(s, "close_replay", lambda: {"ok": True})
@@ -593,7 +609,8 @@ class CloseReplayTests(SandboxTest):
         self.patch(s, "RECORDER", FakeRecorder("spectate"))
         self.window()
         self.patch(subprocess, "run", lambda *_a, **_k: (_ for _ in ()).throw(OSError("denied")))
-        self.assertEqual(s.close_replay(), {"error": "denied"})
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertIn("Close it in League", s.close_replay()["error"])
 
     def test_never_kills_when_the_live_api_is_silent(self):
         self.patch(s, "RECORDER", FakeRecorder("idle"))

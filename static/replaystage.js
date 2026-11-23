@@ -227,7 +227,7 @@ async function rsCapture() {
     post('/api/replay/window', { action: 'behind' });  // League keeps playing behind this window
     rsOnPhase(rsPhase(RS.st));
   } catch (e) {
-    if (e && e.name !== 'NotAllowedError' && e.name !== 'AbortError') banner('Could not show League\'s window here: ' + esc(e.message || e.name), true);
+    if (e && e.name !== 'NotAllowedError' && e.name !== 'AbortError') banner('Could not show League\'s window here. Try again, or use League\'s own window.', true);
   }
 }
 function rsDropStream() {

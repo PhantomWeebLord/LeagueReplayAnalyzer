@@ -385,8 +385,8 @@ class LiveRecorder:
             return {"id": s["id"], "matchId": s.get("matchId"), "gameMode": s.get("gameMode"), "result": s.get("result"),
                     "ended": s.get("ended"), "startedAt": s.get("startedAt"), "snaps": len(s.get("snaps") or []),
                     "champion": me and me.get("championId"), "duration": (s.get("snaps") or [{}])[-1].get("t")}
-        except Exception as e:
-            return {"id": f.stem, "error": str(e)}
+        except Exception:
+            return {"id": f.stem, "error": "Could not read this recording."}
 
     def sessions(self):
         core.LIVE_DIR.mkdir(parents=True, exist_ok=True)

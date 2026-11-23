@@ -314,8 +314,10 @@ def list_replays():
         else:
             try:
                 s = parse_rofl(p)
-            except Exception as e:  # keep listing even if one file is broken
+            except ValueError as e:  # keep listing even if one file is broken
                 s = {"file": p.name, "error": str(e)}
+            except Exception:
+                s = {"file": p.name, "error": "Could not read this replay file."}
             with _lock:
                 _meta_cache[str(p)] = (mt, s)
         s = dict(s)
@@ -412,11 +414,11 @@ def _riot_request(url: str, key: str):
         body = e.read().decode("utf-8", "replace")[:300]
         if e.code == 403 and body.startswith("error code:"):   # Riot's firewall, not a verdict on the API key
             raise RiotError(RIOT_FIREWALL_BLOCK, "Riot's firewall blocked this request. Try again later.")
-        raise RiotError(e.code, RIOT_ERROR_HINTS.get(e.code, body), _retry_after(e.headers))
-    except urllib.error.URLError as e:
-        raise RiotError(502, f"Could not reach Riot API: {e.reason}")
-    except (TimeoutError, ConnectionError, ValueError, http.client.HTTPException) as e:  # slow or cut-off response
-        raise RiotError(502, f"Could not read Riot's response: {e}")
+        raise RiotError(e.code, RIOT_ERROR_HINTS.get(e.code, f"Riot API error (HTTP {e.code})."), _retry_after(e.headers))
+    except urllib.error.URLError:
+        raise RiotError(502, "Could not reach Riot's servers.")
+    except (TimeoutError, ConnectionError, ValueError, http.client.HTTPException):  # slow or cut-off response
+        raise RiotError(502, "Riot's response could not be read.")
 
 
 def riot_get(region: str, path: str, key: str):
@@ -672,8 +674,8 @@ def lcu_request(path: str, method: str = "GET", body=None, timeout: float = LCU_
         except Exception:
             pass
         raise RiotError(e.code, f"client returned HTTP {e.code}: {msg}")
-    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as e:
-        raise RiotError(503, f"League client not reachable ({e}). Is it logged in?")
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException):
+        raise RiotError(503, "League client not reachable. Is it logged in?")
 
 
 def lcu_get(path: str, timeout: float = LCU_TIMEOUT):

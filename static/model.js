@@ -175,14 +175,15 @@ function validPos(pos) {
   return { x: clamp(Number(pos.x), POSITION_LIMITS.min, POSITION_LIMITS.max), y: clamp(Number(pos.y), POSITION_LIMITS.min, POSITION_LIMITS.max) };
 }
 // Data the analysis cannot work with gets a clear error here, instead of a confident review of nothing.
+class GameDataError extends Error {}
 function validateGameData(data) {
   const info = data && data.match && data.match.info, tl = data && data.timeline && data.timeline.info;
-  if (!info || !tl) throw new Error('The match data is incomplete.');
-  if (info.mapId && info.mapId !== RIFT_MAP_ID) throw new Error(`Only Summoner's Rift games are supported (this game was on map ${info.mapId}).`);
+  if (!info || !tl) throw new GameDataError('The match data is incomplete.');
+  if (info.mapId && info.mapId !== RIFT_MAP_ID) throw new GameDataError(`Only Summoner's Rift games are supported (this game was on map ${info.mapId}).`);
   const players = info.participants;
-  if (!Array.isArray(players) || !players.length) throw new Error('The match data has no players.');
-  if (players.some(p => !p || p.participantId == null || !ENEMY[p.teamId])) throw new Error('The match data has invalid players.');
-  if (!Array.isArray(tl.frames) || !tl.frames.some(f => f && isNum(f.timestamp))) throw new Error('The match timeline is empty.');
+  if (!Array.isArray(players) || !players.length) throw new GameDataError('The match data has no players.');
+  if (players.some(p => !p || p.participantId == null || !ENEMY[p.teamId])) throw new GameDataError('The match data has invalid players.');
+  if (!Array.isArray(tl.frames) || !tl.frames.some(f => f && isNum(f.timestamp))) throw new GameDataError('The match timeline is empty.');
 }
 
 // What the player should know before trusting this review.
@@ -216,7 +217,7 @@ function buildGame(data, opts) {
   const endEv = events.find(e => e.type === 'GAME_END');
   const lastFrameT = frames.length ? frames[frames.length - 1].timestamp / 1000 : 0;
   const duration = endEv ? endEv.t : Math.max(lastFrameT, info.gameDuration > 10000 ? info.gameDuration / 1000 : info.gameDuration || 0);
-  if (!(duration > 0)) throw new Error('This match has no game time to analyse.');
+  if (!(duration > 0)) throw new GameDataError('This match has no game time to analyse.');
 
   const ps = info.participants.map(p => ({
     id: p.participantId, puuid: p.puuid, team: p.teamId, champ: p.championName || String(p.championId ?? 'Unknown'), cname: champName(p.championName || String(p.championId ?? 'Unknown')),
