@@ -2,7 +2,7 @@
 League Replay Analyzer - local app server.
 
 From source:  python server.py [replay.rofl] [--port N] [--no-browser] [--live-url URL] [--no-live]
-Packaged:     "Replay Analyzer.exe" [replay.rofl]      (or drag a .rofl onto the exe)
+Packaged:     "Replay Analyzer v2.exe" [replay.rofl]      (or drag a .rofl onto the exe)
 
 Serves the web UI on http://127.0.0.1:<port> (local only), reads replays, loads match data from the
 Riot API / League client, and records live games for the post-game debrief. No third-party packages.
@@ -26,7 +26,7 @@ import lra_live
 from lra_core import RiotError
 
 VERSION = "3.0-replay"
-APP_ID = "lra2"                  # v2 (real replay view) runs side by side with v1, on its own port
+APP_ID = "lra2"                  # how a new launch recognizes an instance that is already running
 APP_TITLE = "Replay Analyzer v2"  # page title = app window title
 MIME = {
     ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",

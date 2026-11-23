@@ -12,12 +12,11 @@ import time
 import urllib.error
 import urllib.request
 import zlib
-from pathlib import Path
 from unittest import mock
 
 from tests import fixtures as fx
 from tests.sandbox import ROOT, SandboxTest
-from tests.test_core import Resp, http_error
+from tests.test_core import Resp
 
 import build_exe as b
 

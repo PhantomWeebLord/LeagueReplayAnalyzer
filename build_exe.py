@@ -17,7 +17,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 BUILD = ROOT / "build"
-NAME = "Replay Analyzer v2"  # separate exe: runs next to v1 (its own port and window)
+NAME = "Replay Analyzer v2"
 
 
 # ---------------------------------------------------------------- icon (drawn in pure Python, no image libraries)

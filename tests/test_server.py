@@ -241,7 +241,7 @@ class ApiTests(ServerCase):
     def test_config_get_never_returns_full_key(self):
         key = "RGAPI-12345678-aaaa-bbbb-cccc-1234567890ab"
         core.save_config({"apiKey": key})
-        st, data, _ = self.req("GET", "/api/config")
+        _, data, _ = self.req("GET", "/api/config")
         self.assertNotIn(key.encode(), data)
         self.assertEqual(json.loads(data)["keyHint"], "…90ab")
 

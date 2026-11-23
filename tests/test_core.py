@@ -10,7 +10,6 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from types import SimpleNamespace as NS
 
 from tests import fixtures as fx
 from tests.sandbox import SandboxTest, core

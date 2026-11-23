@@ -1,5 +1,5 @@
 'use strict';
-/* Self-test: open http://127.0.0.1:8765/?selftest to run every replay in your folder through the full
+/* Self-test: add ?selftest to the app's address to run every replay in your folder through the full
    pipeline (fetch → model → review → every UI view) and check the output for errors / NaNs / bad positions. */
 /* global S, openReplay, posAt, GRADES, renderTabs, updateSide, drawMap, drawChart, renderMoves, stepMove, fmtTime */
 
