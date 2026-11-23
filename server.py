@@ -454,6 +454,8 @@ class AppServer(ThreadingHTTPServer):
     # once) overflows it and the extra connections are reset, so parts of the app silently failed to load.
     request_queue_size = LISTEN_BACKLOG
     daemon_threads = True
+    # On Windows SO_REUSEADDR lets a second process bind the same port, so "port in use" would never be detected.
+    allow_reuse_address = os.name != "nt"
 
 
 def app_url(port, file=None):

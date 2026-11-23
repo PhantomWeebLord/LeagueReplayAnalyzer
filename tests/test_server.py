@@ -729,10 +729,26 @@ class LifecycleTests(SandboxTest):
         s.main()
         self.assertEqual(opened, ["http://127.0.0.1:8767/"])
 
-    def test_known_H7_second_server_can_bind_same_port(self):
+    def test_second_server_cannot_share_the_port(self):
         a = s.AppServer(("127.0.0.1", 0), s.Handler)
         self.addCleanup(a.server_close)
-        b = s.AppServer(("127.0.0.1", a.server_address[1]), s.Handler)
+        with self.assertRaises(OSError):
+            s.AppServer(("127.0.0.1", a.server_address[1]), s.Handler)
+
+    def test_port_is_free_again_right_after_a_restart(self):
+        a = s.AppServer(("127.0.0.1", 0), s.Handler)
+        port = a.server_address[1]
+        p = mock.patch.dict(s.OPTS, {"port": port})
+        p.start()
+        self.addCleanup(p.stop)
+        threading.Thread(target=a.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True).start()
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        c.request("GET", "/api/ping")
+        self.assertEqual(c.getresponse().status, 200)
+        c.close()
+        a.shutdown()
+        a.server_close()
+        b = s.AppServer(("127.0.0.1", port), s.Handler)
         b.server_close()
 
     def test_backlog_is_large_enough_for_a_page_load(self):
