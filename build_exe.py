@@ -6,18 +6,29 @@ Build "Replay Analyzer v2.exe" (a single self-contained Windows executable) with
     python build_exe.py --seed                     also copies this folder's cache/ and config.json into the exe's
                                                    data folder (%LOCALAPPDATA%\\League Replay Analyzer)
 """
+import hashlib
+import io
 import math
 import os
 import shutil
 import struct
 import subprocess
 import sys
+import urllib.request
+import zipfile
 import zlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 BUILD = ROOT / "build"
 NAME = "Replay Analyzer v2"
+# Microsoft's WebView2 loader, the small DLL that opens the app's window. Fetched at build time and checked against
+# these hashes, so the repository holds no binaries and a changed download can't reach the exe.
+WEBVIEW2_VERSION = "1.0.4314.35"
+WEBVIEW2_URL = f"https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/{WEBVIEW2_VERSION}/microsoft.web.webview2.{WEBVIEW2_VERSION}.nupkg"
+WEBVIEW2_PACKAGE_SHA256 = "90778deb1b77e36292828b4b5833c9255c27533f40e0ddd55891ae718944edc4"
+WEBVIEW2_LOADER_SHA256 = "d3fce90bdeecb08596e377dea6a316354dd8949e32ff09b89d51be00c14e21b6"
+WEBVIEW2_FILES = {"build/native/x64/webview2loader.dll": "WebView2Loader.dll", "license.txt": "licenses/LICENSE.txt", "notice.txt": "licenses/NOTICE.txt"}
 
 
 # ---------------------------------------------------------------- icon (drawn in pure Python, no image libraries)
@@ -123,16 +134,52 @@ def seed_data_dir():
     print(f"Seeded {dest}")
 
 
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def extract_webview2(package: bytes, folder: Path):
+    """Unpack the loader and Microsoft's license files, refusing anything that doesn't match the pinned hashes."""
+    if _sha256(package) != WEBVIEW2_PACKAGE_SHA256:
+        raise SystemExit("The downloaded WebView2 package does not match its pinned hash. Build stopped.")
+    with zipfile.ZipFile(io.BytesIO(package)) as z:
+        names = {n.lower(): n for n in z.namelist()}
+        contents = {dest: z.read(names[src]) for src, dest in WEBVIEW2_FILES.items()}
+    if _sha256(contents["WebView2Loader.dll"]) != WEBVIEW2_LOADER_SHA256:
+        raise SystemExit("The WebView2 loader does not match its pinned hash. Build stopped.")
+    for dest, data in contents.items():
+        path = folder / dest
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+
+
+def get_webview2(folder: Path) -> Path:
+    dll = folder / "WebView2Loader.dll"
+    ready = dll.is_file() and _sha256(dll.read_bytes()) == WEBVIEW2_LOADER_SHA256 and all((folder / d).is_file() for d in WEBVIEW2_FILES.values())
+    if not ready:
+        print(f"Downloading WebView2 loader {WEBVIEW2_VERSION}")
+        with urllib.request.urlopen(WEBVIEW2_URL, timeout=120) as r:
+            extract_webview2(r.read(), folder)
+    return folder
+
+
 def main():
     ico = make_icon(BUILD / "app.ico")
+    webview = get_webview2(BUILD / "webview2")
     cmd = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onefile", "--noconsole",
            "--name", NAME, "--icon", str(ico),
            "--add-data", f"{ROOT / 'static'}{os.pathsep}static",
+           "--add-data", f"{webview / 'licenses'}{os.pathsep}licenses/webview2",
+           "--add-binary", f"{webview / 'WebView2Loader.dll'}{os.pathsep}.",
            "--distpath", str(ROOT / "dist"), "--workpath", str(BUILD / "pyi"), "--specpath", str(BUILD),
            str(ROOT / "server.py")]
     print(" ".join(f'"{c}"' if " " in c else c for c in cmd))
     subprocess.check_call(cmd, cwd=str(ROOT))
     exe = ROOT / "dist" / f"{NAME}.exe"
+    notices = ROOT / "dist" / "third-party"     # published next to the exe, as Microsoft's license requires
+    notices.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(webview / "licenses" / "LICENSE.txt", notices / "WebView2-LICENSE.txt")
+    shutil.copy2(webview / "licenses" / "NOTICE.txt", notices / "WebView2-NOTICE.txt")
     print(f"\nBuilt {exe} ({exe.stat().st_size / 1e6:.1f} MB)")
     if "--seed" in sys.argv:
         seed_data_dir()

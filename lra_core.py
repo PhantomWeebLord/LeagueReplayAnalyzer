@@ -922,6 +922,7 @@ def enable_replay_api():
 
 # ---------------------------------------------------------------- v2: the real replay, played by League and shown in the app
 LEAGUE_WINDOW = "League of Legends (TM) Client"   # title of the game window (also used to auto-pick it for capture)
+APP_WINDOW_CLASS = "ReplayAnalyzerWindow"         # the app's own window (see lra_window.py)
 _cv = {"v": None, "at": 0.0}
 
 
@@ -1086,8 +1087,8 @@ def _user32():
 
 
 def find_window(title, prefix=False):
-    """Handle of the top-level window with this title. prefix=True: the first visible browser window
-    (Edge/Chrome) whose title starts with it - the app's own window."""
+    """Handle of the top-level window with this title. prefix=True: the first visible app window (its own,
+    or the Edge/Chrome window it falls back to) whose title starts with it."""
     u = _user32()
     if not u:
         return None
@@ -1104,7 +1105,7 @@ def find_window(title, prefix=False):
         if u.IsWindowVisible(hwnd):
             u.GetWindowTextW(hwnd, buf, 512)
             u.GetClassNameW(hwnd, cls, 256)
-            if buf.value.startswith(title) and cls.value.startswith("Chrome_WidgetWin"):
+            if buf.value.startswith(title) and (cls.value == APP_WINDOW_CLASS or cls.value.startswith("Chrome_WidgetWin")):
                 found.append(hwnd)
                 return False
         return True

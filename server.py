@@ -23,6 +23,7 @@ from pathlib import Path
 
 import lra_core as core
 import lra_live
+import lra_window
 from lra_core import RiotError
 
 VERSION = "3.0-replay"
@@ -46,7 +47,7 @@ def valid_port(value, default: int) -> int:
 
 
 OPTS = {"port": valid_port(os.environ.get("LRA_PORT"), DEFAULT_PORT), "browser": True, "file": None, "live": True,
-        "live_url": os.environ.get("LRA_LIVE_URL", "https://127.0.0.1:2999"), "auto_exit": core.FROZEN}
+        "live_url": os.environ.get("LRA_LIVE_URL", "https://127.0.0.1:2999"), "auto_exit": core.FROZEN, "background": False}
 MATCH_ID_ANY_CASE = re.compile(r"[A-Za-z]+\d*_\d+")
 MATCH_ID = re.compile(r"[A-Z]+\d*_\d+")
 MIN_REPLAY_SPEED, MAX_REPLAY_SPEED = 0.125, 16.0
@@ -85,6 +86,8 @@ def parse_args(argv):
             OPTS["auto_exit"] = True
         elif a == "--no-auto-exit":
             OPTS["auto_exit"] = False
+        elif a == "--background-window":  # automated tests: open off-screen without taking focus
+            OPTS["background"] = True
         elif not a.startswith("--"):
             OPTS["file"] = a
 
@@ -520,7 +523,7 @@ def find_app_browser():
 
 
 def open_window(url):
-    """Open the UI as its own app window (Edge/Chrome --app), falling back to the default browser."""
+    """Fallback when the app's own window can't start: an Edge/Chrome --app window, then the default browser."""
     exe = find_app_browser()
     if exe:
         try:
@@ -536,12 +539,41 @@ def open_window(url):
     webbrowser.open(url)
 
 
+def show_running(url):
+    """The app is already running: bring its window forward, or open a browser window if it has none."""
+    if not lra_window.show_existing(url):
+        open_window(url)
+
+
+def recording():
+    return RECORDER is not None and RECORDER.busy()
+
+
+def run_with_window(srv, url):
+    """Windows needs the UI on the main thread, so the server runs behind it. Closing the window quits the app,
+    unless a live game is being recorded: then the window hides and the app exits when the game ends."""
+    server = threading.Thread(target=srv.serve_forever, name="http", daemon=True)
+    server.start()
+    shown = lra_window.run(url, APP_TITLE, core.DATA, keep_running=recording, background=OPTS["background"])
+    if shown and OPTS["auto_exit"]:
+        return
+    if not shown:
+        open_window(url)
+        if OPTS["auto_exit"]:
+            threading.Thread(target=watchdog, name="watchdog", daemon=True).start()
+    try:
+        while server.is_alive():
+            server.join(1)
+    except KeyboardInterrupt:
+        pass
+
+
 def watchdog():
-    """Packaged app: quit after its window has been closed - but never while a live game is being recorded."""
+    """Browser-window fallback: quit after the page has closed - but never while a live game is being recorded."""
     while True:
         time.sleep(WATCHDOG_TICK)
         now = time.time()
-        if RECORDER is not None and RECORDER.busy():
+        if recording():
             continue
         bye = BYE_AT[0]
         if bye and now - bye > EXIT_AFTER_CLOSE and LAST_PING[0] < bye:
@@ -568,7 +600,7 @@ def main():
         print(f"\n--- start {time.ctime()} v{VERSION} data={core.DATA}")
     port = OPTS["port"]
     if instance_running(port):  # already open: just show it (with the dropped file, if any)
-        open_window(app_url(port, OPTS["file"]))
+        show_running(app_url(port, OPTS["file"]))
         return
     srv = None
     for p in range(port, port + PORT_SEARCH_RANGE):
@@ -578,7 +610,7 @@ def main():
             break
         except OSError:
             if instance_running(p):
-                open_window(app_url(p, OPTS["file"]))
+                show_running(app_url(p, OPTS["file"]))
                 return
     if srv is None:
         print("No free port found.")
@@ -588,6 +620,9 @@ def main():
         RECORDER = lra_live.LiveRecorder(OPTS["live_url"]).start()
     url = app_url(OPTS["port"], OPTS["file"])
     print(f"League Replay Analyzer running at {url}  (data: {core.DATA})  Ctrl+C to stop")
+    if OPTS["browser"] and lra_window.available():
+        run_with_window(srv, url)
+        return
     if OPTS["browser"]:
         threading.Timer(0.4, lambda: open_window(url)).start()
     if OPTS["auto_exit"]:

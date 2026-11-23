@@ -22,11 +22,13 @@ Open a League of Legends replay (`.rofl`) and get a chess.com-style **Game Revie
 
 **[Download ReplayAnalyzer.exe](https://github.com/PhantomWeebLord/LeagueReplayAnalyzer/releases/latest/download/ReplayAnalyzer.exe)** for Windows 10 or 11 (64-bit), then double-click it. There's nothing to install. To analyse a game, pick it from the list, use *Open .rofl…*, or drag a `.rofl` file onto the window.
 
+The app opens in its own window using Microsoft's WebView2 runtime, which comes with Windows 11 and most Windows 10 PCs. If it's missing, the app opens in Edge, Chrome or your default browser instead.
+
 > The exe isn't code-signed, so Windows SmartScreen may warn the first time (*More info*, then *Run anyway*). Each release is built from this source by [GitHub Actions](.github/workflows/release.yml) and lists its SHA-256 checksum.
 
-**From source** (Python 3.9+, no extra packages): `python server.py`, or double-click `start.bat`.
+**From source** (Python 3.9+, no extra packages): `python server.py`, or double-click `start.bat`. It uses a browser window until `build_exe.py` has fetched the WebView2 loader.
 
-**Build a single exe:** run `python -m pip install pyinstaller`, then `python build_exe.py`. The result is `dist\Replay Analyzer v2.exe`. You can copy it anywhere; it keeps its data in `%LOCALAPPDATA%\League Replay Analyzer` (put an empty `portable.txt` next to the exe to keep data beside it instead). It closes itself about 30 seconds after you close its window, but never while it's recording one of your games.
+**Build a single exe:** run `python -m pip install pyinstaller`, then `python build_exe.py`. The build downloads Microsoft's WebView2 loader from NuGet and checks it against a pinned SHA-256. The result is `dist\Replay Analyzer v2.exe`. You can copy it anywhere; it keeps its data in `%LOCALAPPDATA%\League Replay Analyzer` (put an empty `portable.txt` next to the exe to keep data beside it instead). Closing its window quits the app. If it's recording one of your games, it finishes out of sight and then exits.
 
 
 ## Where the data comes from
@@ -97,11 +99,12 @@ Add `?selftest` to the app's address to run every replay in your folder through 
 python tests/run_all.py
 ```
 
-The suite uses only Python's standard library plus an installed Edge or Chrome. It runs in a sandbox and never touches League, your saved data or the internet. Optional settings are listed in [`.env.example`](.env.example). See the [hardening report](docs/hardening/REPORT.md) for the production review.
+The suite uses only Python's standard library plus an installed Edge or Chrome. It runs in a sandbox and never touches League, your saved data or the internet. To run the interface tests inside the app's real window, use `python tests/browser.py --webview` after building once. Optional settings are listed in [`.env.example`](.env.example). See the [hardening report](docs/hardening/REPORT.md) for the production review.
 
 ## Files
 
-- `server.py`: app server: HTTP, app window, single-instance, auto-exit, local-only request checks
+- `server.py`: app server: HTTP, single-instance, auto-exit, local-only request checks
+- `lra_window.py`: the app's own window (Win32 + WebView2, through Python's built-in `ctypes`)
 - `lra_core.py`: replays, Riot API, League client, Data Dragon assets, game config
 - `lra_live.py`: live game recorder (Live Client Data API)
 - `static/model.js`: movement (routed paths), territory, win-chance features, fights, phases, live enrichment
@@ -127,5 +130,7 @@ Use your own key and never commit it. Riot requires products that serve players 
 ## License
 
 The code is released under the [MIT License](LICENSE). The license does not grant any rights to Riot Games' intellectual property.
+
+The exe includes Microsoft's `WebView2Loader.dll`, under Microsoft's own license. Its license and notices are published with each release and are created next to the exe by `build_exe.py` (`dist\third-party`).
 
 Replay Analyzer isn't endorsed by Riot Games and doesn't reflect the views or opinions of Riot Games or anyone officially involved in producing or managing Riot Games properties. Riot Games, and all associated properties are trademarks or registered trademarks of Riot Games, Inc.

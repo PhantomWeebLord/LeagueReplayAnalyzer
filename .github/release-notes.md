@@ -1,3 +1,7 @@
+## What's new
+
+The app now opens in its own window instead of an Edge window, so Edge's save-password prompt no longer appears. It uses Microsoft's WebView2, which comes with Windows 11 and most Windows 10 PCs. Without it, the app opens in Edge, Chrome or your default browser as before. Microsoft's license and notices for the included WebView2 loader are attached below.
+
 ## Download and run
 
 1. Download **ReplayAnalyzer.exe** from the assets below.

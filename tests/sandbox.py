@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT))
 sys.dont_write_bytecode = True
 
 import lra_core as core  # noqa: E402
+import lra_window  # noqa: E402
 
 
 def _blocked_network(*_a, **_k):
@@ -54,6 +55,9 @@ class Sandbox:
         self.patch(subprocess, "run", _blocked_process)
         self.patch(subprocess, "Popen", _blocked_process)
         self.patch(webbrowser, "open", lambda *_a, **_k: True)
+        self.patch(lra_window, "available", lambda: False)         # no test may open or message a real app window
+        self.patch(lra_window, "run", lambda *_a, **_k: False)
+        self.patch(lra_window, "show_existing", lambda _url: False)
         return self
 
     def stop(self):

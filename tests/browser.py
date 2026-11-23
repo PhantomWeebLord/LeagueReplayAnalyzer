@@ -3,10 +3,12 @@
     python tests/browser.py                  synthetic games
     python tests/browser.py --real           also compare your local replays with their saved baseline
     python tests/browser.py --update-golden  record new baselines (only after reviewing why they changed)
+    python tests/browser.py --webview        run inside the app's real window instead (needs build/webview2 from build_exe.py)
 
 Local replay baselines are kept in tests/.local/ (git-ignored) because they contain real match data.
 """
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -21,10 +23,12 @@ REAL_POPEN = subprocess.Popen
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests import fixtures as fx  # noqa: E402
-from tests.sandbox import ROOT, Sandbox, core  # noqa: E402
+from tests.sandbox import ROOT, Sandbox, core, lra_window  # noqa: E402
 
 import server as s  # noqa: E402
 
+REAL_WINDOW_RUN = lra_window.run     # the sandbox blocks this for every other test
+NO_THROTTLING = "--disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows"
 JS = ROOT / "tests" / "js"
 GOLDEN = ROOT / "tests" / "golden" / "synthetic.json"
 LOCAL_GOLDEN = ROOT / "tests" / ".local" / "real_golden.json"
@@ -118,13 +122,23 @@ def stop_browser(profile, proc):
     """Stops only the browser started for this run, identified by its temporary profile folder."""
     _run_quietly(["taskkill", "/T", "/F", "/PID", str(proc.pid)], 10)
     needle = str(profile).replace("'", "''")
-    ps = f"Get-CimInstance Win32_Process -Filter \"Name='msedge.exe' OR Name='chrome.exe'\" | Where-Object {{ $_.CommandLine -like '*{needle}*' }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}"
+    ps = f"Get-CimInstance Win32_Process -Filter \"Name='msedge.exe' OR Name='chrome.exe' OR Name='msedgewebview2.exe'\" | Where-Object {{ $_.CommandLine -like '*{needle}*' }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}"
     _run_quietly(["powershell", "-NoProfile", "-Command", ps], 30)
 
 
-def run(real=False, update=False, quiet=False):
+def run_in_app_window(url, profile, results):
+    """Runs the page in the app's real window, off-screen and without taking focus. Blocks until it closes."""
+    def close_when_done():
+        results.done.wait(TIMEOUT)
+        lra_window.request_close()
+    threading.Thread(target=close_when_done, daemon=True).start()
+    os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = NO_THROTTLING
+    return REAL_WINDOW_RUN(url, "Replay Analyzer tests", profile, background=True)
+
+
+def run(real=False, update=False, webview=False):
     browser = s.find_app_browser()
-    if not browser:
+    if not browser and not webview:
         print("Edge or Chrome is required for the browser tests.")
         return None
     box = Sandbox().start()
@@ -159,6 +173,14 @@ def run(real=False, update=False, quiet=False):
         s.OPTS["port"] = port
         threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
         url = f"http://127.0.0.1:{port}/__e2e"
+        if webview:
+            if not run_in_app_window(url, profile, results):
+                print("The app window could not start.")
+                return None
+            if not results.done.is_set():
+                print("Browser tests timed out.")
+                return None
+            return results.data
         proc = REAL_POPEN([browser, "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check", "--disable-extensions", "--disable-sync",
                            "--disable-background-timer-throttling", "--disable-renderer-backgrounding", "--disable-backgrounding-occluded-windows",
                            f"--user-data-dir={profile}", "--window-size=1500,1000", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -200,5 +222,5 @@ def report(data, update=False):
 if __name__ == "__main__":
     real_mode = "--real" in sys.argv
     update_mode = "--update-golden" in sys.argv
-    ok = report(run(real_mode, update_mode), update_mode)
+    ok = report(run(real_mode, update_mode, "--webview" in sys.argv), update_mode)
     sys.exit(0 if ok else 1)

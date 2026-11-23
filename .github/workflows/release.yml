@@ -56,5 +56,5 @@ jobs:
           [IO.File]::WriteAllText("$PWD\ReplayAnalyzer.exe.sha256", "$sha  ReplayAnalyzer.exe`n")  # LF, so sha256sum -c works
           $notes = (Get-Content ".github\release-notes.md" -Raw) + "`n**SHA-256:** ``$sha```n"
           Set-Content -Path "notes.md" -Value $notes -Encoding utf8
-          gh release create "$env:GITHUB_REF_NAME" "ReplayAnalyzer.exe" "ReplayAnalyzer.exe.sha256" --verify-tag --title "Replay Analyzer $env:GITHUB_REF_NAME" --notes-file "notes.md"
+          gh release create "$env:GITHUB_REF_NAME" "ReplayAnalyzer.exe" "ReplayAnalyzer.exe.sha256" "dist\third-party\WebView2-LICENSE.txt" "dist\third-party\WebView2-NOTICE.txt" --verify-tag --title "Replay Analyzer $env:GITHUB_REF_NAME" --notes-file "notes.md"
           if ($LASTEXITCODE -ne 0) { throw "Publishing failed." }

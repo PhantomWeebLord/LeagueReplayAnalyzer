@@ -1,5 +1,6 @@
 """Characterization tests for the build script and the training tools."""
 import gzip
+import hashlib
 import http.client
 import importlib.util
 import io
@@ -11,6 +12,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import zipfile
 import zlib
 from unittest import mock
 
@@ -100,13 +102,59 @@ class IconTests(SandboxTest):
         (self.tmp / "dist").mkdir()
         (self.tmp / "dist" / f"{b.NAME}.exe").write_bytes(b"x")
         self.patch(b, "make_icon", lambda p: p)
+        loader = self.tmp / "wv"
+        (loader / "licenses").mkdir(parents=True)
+        (loader / "licenses" / "LICENSE.txt").write_text("license")
+        (loader / "licenses" / "NOTICE.txt").write_text("notice")
+        self.patch(b, "get_webview2", lambda _f: loader)
         self.patch(b.subprocess, "check_call", lambda cmd, cwd=None: calls.append(cmd))
         with mock.patch.object(sys, "argv", ["build_exe.py"]), mock.patch("builtins.print"):
             b.main()
         joined = " ".join(calls[0])
         self.assertIn("--onefile", joined)
-        self.assertEqual(calls[0].count("--add-data"), 1)
+        data = [calls[0][i + 1] for i, a in enumerate(calls[0]) if a == "--add-data"]
+        self.assertEqual([d.rsplit(os.pathsep, 1)[1] for d in data], ["static", "licenses/webview2"])
+        self.assertEqual(calls[0].count("--add-binary"), 1)
+        self.assertIn("WebView2Loader.dll", joined)
         self.assertNotIn("anthropic", joined)
+        self.assertEqual((self.tmp / "dist" / "third-party" / "WebView2-LICENSE.txt").read_text(), "license")
+
+    def _webview_package(self, dll=b"loader"):
+        out = io.BytesIO()
+        with zipfile.ZipFile(out, "w") as z:
+            z.writestr("build/native/x64/WebView2Loader.dll", dll)
+            z.writestr("LICENSE.txt", "license")
+            z.writestr("NOTICE.txt", "notice")
+        return out.getvalue()
+
+    def test_webview2_package_with_wrong_hash_is_refused(self):
+        with self.assertRaises(SystemExit):
+            b.extract_webview2(self._webview_package(), self.tmp / "wv")
+        self.assertFalse((self.tmp / "wv" / "WebView2Loader.dll").exists())
+
+    def test_webview2_loader_with_wrong_hash_is_refused(self):
+        package = self._webview_package()
+        self.patch(b, "WEBVIEW2_PACKAGE_SHA256", hashlib.sha256(package).hexdigest())
+        with self.assertRaises(SystemExit):
+            b.extract_webview2(package, self.tmp / "wv")
+        self.assertFalse((self.tmp / "wv" / "WebView2Loader.dll").exists())
+
+    def test_webview2_matching_package_extracts_loader_and_licenses(self):
+        package = self._webview_package()
+        self.patch(b, "WEBVIEW2_PACKAGE_SHA256", hashlib.sha256(package).hexdigest())
+        self.patch(b, "WEBVIEW2_LOADER_SHA256", hashlib.sha256(b"loader").hexdigest())
+        b.extract_webview2(package, self.tmp / "wv")
+        self.assertEqual((self.tmp / "wv" / "WebView2Loader.dll").read_bytes(), b"loader")
+        self.assertEqual((self.tmp / "wv" / "licenses" / "NOTICE.txt").read_text(), "notice")
+
+    def test_webview2_verified_copy_is_not_downloaded_again(self):
+        folder = self.tmp / "wv"
+        (folder / "licenses").mkdir(parents=True)
+        (folder / "WebView2Loader.dll").write_bytes(b"loader")
+        (folder / "licenses" / "LICENSE.txt").write_text("l")
+        (folder / "licenses" / "NOTICE.txt").write_text("n")
+        self.patch(b, "WEBVIEW2_LOADER_SHA256", hashlib.sha256(b"loader").hexdigest())
+        self.assertEqual(b.get_webview2(folder), folder)  # the sandbox blocks the network, so a download would raise
 
 
 class ReleaseWorkflowTests(SandboxTest):
