@@ -30,6 +30,17 @@ REGION_OF = {"na1": "americas", "br1": "americas", "la1": "americas", "la2": "am
              "euw1": "europe", "eun1": "europe", "tr1": "europe", "ru": "europe",
              "kr": "asia", "jp1": "asia", "oc1": "sea", "sg2": "sea", "tw2": "sea", "vn2": "sea"}
 
+RANKED_SOLO_QUEUE = 420
+RIFT_MAP_ID = 11
+MIN_GAME_SECONDS = 600
+MIN_MAJOR_PATCH = 16
+QUEUE_LOW_WATER = 60        # top the match queue up from the next player below this size
+MAX_BAD_PLAYER_IDS = 5      # this many HTTP 400s in a row means the stored ladder belongs to an older key
+REQUEUE_DELAY = 5
+SAVE_STATE_EVERY = 10       # the state file is over 1 MB: do not rewrite it after every game
+LOG_EVERY = 25
+SECONDS_PER_DAY = 86400
+
 KEEP_EVENTS = {"CHAMPION_KILL", "CHAMPION_SPECIAL_KILL", "WARD_PLACED", "WARD_KILL", "BUILDING_KILL", "ELITE_MONSTER_KILL",
                "TURRET_PLATE_DESTROYED", "DRAGON_SOUL_GIVEN", "ITEM_PURCHASED", "LEVEL_UP", "GAME_END"}
 KEEP_PFRAME = ("position", "totalGold", "currentGold", "xp", "level", "minionsKilled", "jungleMinionsKilled")
@@ -215,6 +226,138 @@ def wait_for_key(plat, key, minutes=5):
             time.sleep(15)
 
 
+def _is_training_game(m):
+    """Ranked solo queue on Summoner's Rift, long enough to be a real game, from a current season."""
+    info = (m or {}).get("info")
+    if not info:
+        return False
+    major = str(info.get("gameVersion", "")).split(".")[0]
+    return info.get("mapId") == RIFT_MAP_ID and info.get("queueId") == RANKED_SOLO_QUEUE \
+        and (info.get("gameDuration") or 0) >= MIN_GAME_SECONDS and major.isdigit() and int(major) >= MIN_MAJOR_PATCH
+
+
+class Fetcher:
+    """One download run: keeps a queue of match ids topped up from the ladder and saves each game."""
+
+    def __init__(self, args, key, state):
+        self.args, self.key, self.st = args, key, state
+        self.plat, self.region = args.platform, REGION_OF.get(args.platform, "americas")
+        self.have = {p.name.split(".")[0] for p in DATA.glob("*.json.gz")}
+        self.skipped = set(state.get("skipped", []))
+        self.queued = set()
+        self.bad_ids = 0
+        self.start_time = 0
+
+    def _match_url(self, suffix):
+        return f"https://{self.region}.api.riotgames.com/lol/match/v5/matches/{suffix}"
+
+    def _refresh_ladder(self):
+        self.st["players"] = fetch_players(self.plat, self.key, int(time.time()))
+        self.st["playerIdx"] = 0
+
+    def _player_puuid(self, pl):
+        puuid = pl.get("puuid")
+        if not puuid and pl.get("summonerId"):
+            s = get(f"https://{self.plat}.api.riotgames.com/lol/summoner/v4/summoners/{pl['summonerId']}", self.key) or {}
+            puuid = s.get("puuid")
+        return puuid
+
+    def _queue_player_games(self, puuid):
+        q = urllib.parse.urlencode({"queue": RANKED_SOLO_QUEUE, "type": "ranked", "start": 0, "count": self.args.per_player, "startTime": self.start_time})
+        try:
+            ids = get(self._match_url(f"by-puuid/{puuid}/ids?{q}"), self.key) or []
+            self.bad_ids = 0
+        except BadPlayerId:
+            self.bad_ids += 1
+            if self.bad_ids >= MAX_BAD_PLAYER_IDS:
+                log("player IDs no longer valid for this key: refreshing the ladder")
+                self._refresh_ladder()
+                self.bad_ids = 0
+            return
+        except Transient:
+            return
+        new = [i for i in ids if i not in self.have and i not in self.queued and i not in self.skipped]
+        self.st["queue"].extend(new)
+        self.queued.update(new)
+
+    def refill_queue(self):
+        st = self.st
+        while len(st["queue"]) < QUEUE_LOW_WATER and st["playerIdx"] < len(st["players"]):
+            pl = st["players"][st["playerIdx"]]
+            st["playerIdx"] += 1
+            puuid = self._player_puuid(pl)
+            if puuid:
+                self._queue_player_games(puuid)
+
+    def _try_later(self):
+        self.st["queue"].append(self.st["queue"].pop(0))
+        time.sleep(REQUEUE_DELAY)
+
+    def _reject(self, mid):
+        self.st["queue"].pop(0)
+        self.queued.discard(mid)
+        self.skipped.add(mid)
+        self.st["skipped"] = sorted(self.skipped)
+
+    def _save_game(self, mid, m, tl):
+        out = DATA / f"{mid}.json.gz"
+        tmp = out.with_suffix(".tmp")
+        with gzip.open(tmp, "wt", encoding="utf-8") as f:
+            json.dump(strip(m, tl), f, separators=(",", ":"))
+        os.replace(tmp, out)
+        self.st["queue"].pop(0)
+        self.queued.discard(mid)
+        self.have.add(mid)
+        if len(self.have) % SAVE_STATE_EVERY == 0:
+            save_state(self.st)
+        if len(self.have) % LOG_EVERY == 0:
+            v = m["info"]["gameVersion"].split(".")
+            log(f"{len(self.have)} games (patch {v[0]}.{v[1]}, player {self.st['playerIdx']}/{len(self.st['players'])})")
+
+    def download_next(self):
+        """The game stays in the queue until it is saved or rejected, so a stop never loses it."""
+        mid = self.st["queue"][0]
+        try:
+            m = get(self._match_url(mid), self.key)
+        except (Transient, BadPlayerId):
+            return self._try_later()
+        if not _is_training_game(m):
+            return self._reject(mid)
+        try:
+            tl = get(self._match_url(f"{mid}/timeline"), self.key)
+        except (Transient, BadPlayerId):
+            return self._try_later()
+        if not tl or not tl.get("info"):
+            return self._reject(mid)
+        return self._save_game(mid, m, tl)
+
+    def run(self):
+        st = self.st
+        log(f"start: {len(self.have)} games on disk, target {self.args.target}")
+        try:
+            wait_for_key(self.plat, self.key)
+            if self.args.refresh_players or not st["players"]:
+                self._refresh_ladder()
+                save_state(st)
+            self.start_time = int(time.time()) - self.args.days * SECONDS_PER_DAY
+            self.queued = set(st["queue"])
+            while len(self.have) < self.args.target:
+                self.refill_queue()
+                if not st["queue"]:
+                    log("no more players / matches to fetch")
+                    break
+                self.download_next()
+        except KeyExpired as e:
+            log(f"API key rejected ({e}) — the dev key has probably expired. Stopping with {len(self.have)} games.")
+            save_state(st)
+            sys.exit(2)
+        except KeyboardInterrupt:
+            save_state(st)
+            return
+        save_state(st)
+        log(f"done: {len(self.have)} games on disk")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--target", type=int, default=4000)
@@ -224,96 +367,8 @@ def main():
     ap.add_argument("--refresh-players", action="store_true", help="fetch the current ladder (needed after changing API key)")
     a = ap.parse_args()
     key = load_key()
-    plat, region = a.platform, REGION_OF.get(a.platform, "americas")
     DATA.mkdir(parents=True, exist_ok=True)
-    st = load_state()
-    have = {p.name.split(".")[0] for p in DATA.glob("*.json.gz")}
-    skipped = set(st.get("skipped", []))
-    log(f"start: {len(have)} games on disk, target {a.target}")
-
-    bad_ids = 0
-    try:
-        wait_for_key(plat, key)
-        if a.refresh_players or not st["players"]:
-            st["players"] = fetch_players(plat, key, int(time.time()))
-            st["playerIdx"] = 0
-            save_state(st)
-
-        start_time = int(time.time()) - a.days * 86400
-        queued = set(st["queue"])
-        while len(have) < a.target:
-            # keep a queue of match ids topped up from the next player's recent ranked games
-            while len(st["queue"]) < 60 and st["playerIdx"] < len(st["players"]):
-                pl = st["players"][st["playerIdx"]]
-                st["playerIdx"] += 1
-                puuid = pl.get("puuid")
-                if not puuid and pl.get("summonerId"):
-                    s = get(f"https://{plat}.api.riotgames.com/lol/summoner/v4/summoners/{pl['summonerId']}", key) or {}
-                    puuid = s.get("puuid")
-                if not puuid:
-                    continue
-                q = urllib.parse.urlencode({"queue": 420, "type": "ranked", "start": 0, "count": a.per_player, "startTime": start_time})
-                try:
-                    ids = get(f"https://{region}.api.riotgames.com/lol/match/v5/matches/by-puuid/{puuid}/ids?{q}", key) or []
-                    bad_ids = 0
-                except BadPlayerId:
-                    bad_ids += 1
-                    if bad_ids >= 5:  # the whole list belongs to an older key
-                        log("player IDs no longer valid for this key: refreshing the ladder")
-                        st["players"] = fetch_players(plat, key, int(time.time()))
-                        st["playerIdx"] = 0
-                        bad_ids = 0
-                    continue
-                except Transient:
-                    continue
-                new = [i for i in ids if i not in have and i not in queued and i not in skipped]
-                st["queue"].extend(new)
-                queued.update(new)
-            if not st["queue"]:
-                log("no more players / matches to fetch")
-                break
-            mid = st["queue"][0]  # only removed once it is saved or rejected, so a stop never loses it
-            try:
-                m = get(f"https://{region}.api.riotgames.com/lol/match/v5/matches/{mid}", key)
-            except (Transient, BadPlayerId):  # keep it, but behind the others
-                st["queue"].append(st["queue"].pop(0))
-                time.sleep(5)
-                continue
-            ok = m and m.get("info") and m["info"].get("mapId") == 11 and m["info"].get("queueId") == 420 \
-                and (m["info"].get("gameDuration") or 0) >= 600 and str(m["info"].get("gameVersion", "")).split(".")[0].isdigit() \
-                and int(str(m["info"]["gameVersion"]).split(".")[0]) >= 16
-            if not ok:
-                st["queue"].pop(0); queued.discard(mid); skipped.add(mid); st["skipped"] = sorted(skipped)
-                continue
-            try:
-                tl = get(f"https://{region}.api.riotgames.com/lol/match/v5/matches/{mid}/timeline", key)
-            except (Transient, BadPlayerId):
-                st["queue"].append(st["queue"].pop(0))
-                time.sleep(5)
-                continue
-            if not tl or not tl.get("info"):
-                st["queue"].pop(0); queued.discard(mid); skipped.add(mid); st["skipped"] = sorted(skipped)
-                continue
-            out = DATA / f"{mid}.json.gz"
-            tmp = out.with_suffix(".tmp")
-            with gzip.open(tmp, "wt", encoding="utf-8") as f:
-                json.dump(strip(m, tl), f, separators=(",", ":"))
-            os.replace(tmp, out)
-            st["queue"].pop(0); queued.discard(mid)
-            have.add(mid)
-            if len(have) % 10 == 0:  # the state file is over 1 MB: do not rewrite it after every game
-                save_state(st)
-            if len(have) % 25 == 0:
-                log(f"{len(have)} games (patch {m['info']['gameVersion'].split('.')[0]}.{m['info']['gameVersion'].split('.')[1]}, player {st['playerIdx']}/{len(st['players'])})")
-    except KeyExpired as e:
-        log(f"API key rejected ({e}) — the dev key has probably expired. Stopping with {len(have)} games.")
-        save_state(st)
-        sys.exit(2)
-    except KeyboardInterrupt:
-        save_state(st)
-        return
-    save_state(st)
-    log(f"done: {len(have)} games on disk")
+    Fetcher(a, key, load_state()).run()
 
 
 if __name__ == "__main__":
